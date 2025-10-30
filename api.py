@@ -5,37 +5,56 @@ from typing import Any, Dict, List, Optional
 import requests
 
 
-class HKGAIClient:
-    """Thin wrapper around the HKGAI chat completions endpoint."""
+class LLMClient:
+    """Universal client for various LLM API endpoints."""
 
     def __init__(
         self,
-        api_key: Optional[str] = "sk-iqA1pjC48rpFXdkU7cCaE3BfBc9145B4BfCbEe0912126646",
-        model_id: str = "HKGAI-V1",
-        base_url: str = "https://oneapi.hkgai.net/v1",
-        request_timeout: int = 30,
+        api_key: Optional[str] = None,
+        model_id: str = "gpt-3.5-turbo",
+        base_url: str = "https://api.openai.com/v1",
+        request_timeout: int = 300,
+        provider: str = "openai"
     ) -> None:
-        self.api_key = api_key or os.getenv("HKGAI_API_KEY")
-        if not self.api_key:
-            raise ValueError("HKGAI_API_KEY must be provided via argument or environment variable.")
-
+        self.api_key = api_key
         self.model_id = model_id
         self.base_url = base_url.rstrip("/")
         self.request_timeout = request_timeout
+        self.provider = provider
+        
+        if not self.api_key:
+            raise ValueError(f"{provider.upper()}_API_KEY must be provided.")
+        
+        # Set headers based on provider
         self.headers = {
-            "Authorization": f"Bearer {self.api_key}",
             "Content-Type": "application/json",
         }
+        
+        if provider == "openai":
+            self.headers["Authorization"] = f"Bearer {self.api_key}"
+        elif provider == "anthropic":
+            self.headers["x-api-key"] = self.api_key
+            self.headers["anthropic-version"] = "2023-06-01"
+        elif provider == "google":
+            self.headers["Authorization"] = f"Bearer {self.api_key}"
+        elif provider == "glm":
+            self.headers["Authorization"] = f"Bearer {self.api_key}"
+        else:
+            # Default to Bearer token
+            self.headers["Authorization"] = f"Bearer {self.api_key}"
 
     def chat(
         self,
         system_prompt: str,
         user_prompt: str,
-        max_tokens: int = 500,
+        max_tokens: int = 5000,
         temperature: float = 0.7,
         extra_messages: Optional[List[Dict[str, str]]] = None,
     ) -> Dict[str, Any]:
+        """Chat method for OpenAI-compatible APIs."""
         endpoint = f"{self.base_url}/chat/completions"
+        
+        # Build messages array
         messages = [{"role": "system", "content": system_prompt}]
         if extra_messages:
             messages.extend(extra_messages)
@@ -47,6 +66,10 @@ class HKGAIClient:
             "max_tokens": max_tokens,
             "temperature": temperature,
         }
+
+        # GLM-specific adjustments
+        if self.provider == "glm":
+            payload["stream"] = False
 
         try:
             response = requests.post(
@@ -88,6 +111,18 @@ class HKGAIClient:
             }
 
         return {"content": content, "raw": data}
+
+
+class HKGAIClient(LLMClient):
+    """Legacy wrapper for HKGAI service."""
+    
+    def __init__(self, api_key: Optional[str] = None) -> None:
+        super().__init__(
+            api_key=api_key,
+            model_id="HKGAI-V1",
+            base_url="https://oneapi.hkgai.net/v1",
+            provider="hkgai"
+        )
 
 
 if __name__ == "__main__":

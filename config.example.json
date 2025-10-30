@@ -1,0 +1,31 @@
+{
+    "LLM_PROVIDER": "glm",
+    "SERPAPI_API_KEY": "YOUR_SERPAPI_API_KEY_HERE",
+    "providers": {
+        "openai": {
+            "api_key": "YOUR_OPENAI_API_KEY_HERE",
+            "model": "gpt-3.5-turbo",
+            "base_url": "https://api.openai.com/v1"
+        },
+        "anthropic": {
+            "api_key": "YOUR_ANTHROPIC_API_KEY_HERE",
+            "model": "claude-3-sonnet-20240229",
+            "base_url": "https://api.anthropic.com/v1"
+        },
+        "google": {
+            "api_key": "YOUR_GOOGLE_API_KEY_HERE",
+            "model": "gemini-pro",
+            "base_url": "https://generativelanguage.googleapis.com/v1beta"
+        },
+        "hkgai": {
+            "api_key": "YOUR_HKGAI_API_KEY_HERE",
+            "model": "HKGAI-V1",
+            "base_url": "https://oneapi.hkgai.net/v1"
+        },
+        "glm": {
+            "api_key": "YOUR_GLM_API_KEY_HERE",
+            "model": "glm-4.6",
+            "base_url": "https://open.bigmodel.cn/api/coding/paas/v4"
+        }
+    }
+}

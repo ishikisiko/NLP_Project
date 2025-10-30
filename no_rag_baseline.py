@@ -48,7 +48,8 @@ class NoRAGBaseline:
         return (
             "You are given a set of search results. "
             "Use them to answer the question at the end. "
-            "Cite the URLs inline when possible.\n\n"
+            "When citing sources, use the format (URL 1), (URL 2), etc., "
+            "where the number corresponds to the search result number.\n\n"
             f"Search Results:\n{context_block}\n\n"
             f"Question: {query}\n\n"
             "Answer:"
@@ -59,7 +60,7 @@ class NoRAGBaseline:
         query: str,
         *,
         num_search_results: int = 5,
-        max_tokens: int = 500,
+        max_tokens: int = 5000,
         temperature: float = 0.3,
     ) -> Dict[str, object]:
         hits = self.search_client.search(query, num_results=num_search_results)
@@ -71,9 +72,19 @@ class NoRAGBaseline:
             temperature=temperature,
         )
 
+        # Build answer with URL references
+        answer = response.get("content")
+        if answer and hits:
+            # Append reference list
+            answer += "\n\n**参考链接：**\n"
+            for idx, hit in enumerate(hits, start=1):
+                url = hit.url or "No URL available."
+                title = hit.title or f"结果 {idx}"
+                answer += f"{idx}. [{title}]({url})\n"
+
         return {
             "query": query,
-            "answer": response.get("content"),
+            "answer": answer,
             "search_hits": [asdict(hit) for hit in hits],
             "llm_raw": response.get("raw"),
             "llm_warning": response.get("warning"),
