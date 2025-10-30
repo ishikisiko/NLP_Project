@@ -1,0 +1,74 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>NLP Project Demo</title>
+    <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+    <header>
+        <h1>NLP Project Demo</h1>
+        <p>Ask a question and the Retrieval-Augmented Generation pipeline will answer using live search results.</p>
+    </header>
+
+    <main>
+        <section class="card">
+            <form id="query-form">
+                <label for="query">Question</label>
+                <textarea id="query" name="query" rows="3" placeholder="What is the latest news about electric vehicles?" required></textarea>
+
+                <div class="form-row">
+                    <label for="provider">Provider</label>
+                    <select id="provider" name="provider">
+                        <option value="">Use default</option>
+                        <option value="openai">OpenAI</option>
+                        <option value="anthropic">Anthropic</option>
+                        <option value="google">Google</option>
+                        <option value="glm">GLM</option>
+                        <option value="hkgai">HKGAI</option>
+                    </select>
+                </div>
+
+                <div class="form-row">
+                    <label for="num-results">Search Results</label>
+                    <input type="number" id="num-results" name="num_results" min="1" max="10" value="5">
+                </div>
+
+                <div class="form-row">
+                    <label for="max-tokens">Max Tokens</label>
+                    <input type="number" id="max-tokens" name="max_tokens" min="100" max="8000" value="5000">
+                </div>
+
+                <div class="form-row">
+                    <label for="temperature">Temperature</label>
+                    <input type="number" id="temperature" name="temperature" min="0" max="1" step="0.1" value="0.3">
+                </div>
+
+                <button type="submit">Ask</button>
+            </form>
+        </section>
+
+        <section class="card" id="status-card" hidden>
+            <h2>Status</h2>
+            <p id="status-message"></p>
+        </section>
+
+        <section class="card" id="answer-card" hidden>
+            <h2>Answer</h2>
+            <pre id="answer"></pre>
+        </section>
+
+        <section class="card" id="results-card" hidden>
+            <h2>Search Results</h2>
+            <ol id="results"></ol>
+        </section>
+    </main>
+
+    <footer>
+        <p>Configure API keys in <code>config.json</code> before starting the server.</p>
+    </footer>
+
+    <script src="script.js" defer></script>
+</body>
+</html>

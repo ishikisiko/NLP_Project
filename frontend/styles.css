@@ -1,0 +1,111 @@
+:root {
+    color-scheme: light dark;
+    font-family: "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    line-height: 1.5;
+}
+
+body {
+    margin: 0;
+    padding: 0;
+    background: linear-gradient(135deg, #1d3557, #457b9d);
+    color: #f1faee;
+    min-height: 100vh;
+    display: flex;
+    flex-direction: column;
+}
+
+header, footer {
+    text-align: center;
+    padding: 2rem 1rem;
+}
+
+main {
+    flex: 1;
+    display: grid;
+    gap: 1.5rem;
+    max-width: 960px;
+    margin: 0 auto 3rem;
+    padding: 0 1rem 3rem;
+}
+
+.card {
+    background: rgba(255, 255, 255, 0.08);
+    border-radius: 12px;
+    padding: 1.5rem;
+    box-shadow: 0 12px 32px rgba(0, 0, 0, 0.25);
+    backdrop-filter: blur(12px);
+}
+
+form {
+    display: flex;
+    flex-direction: column;
+    gap: 1rem;
+}
+
+label {
+    font-weight: 600;
+    display: block;
+    margin-bottom: 0.25rem;
+}
+
+textarea,
+input,
+select {
+    width: 100%;
+    padding: 0.75rem;
+    border-radius: 8px;
+    border: none;
+    font-size: 1rem;
+    resize: vertical;
+    background: rgba(255, 255, 255, 0.85);
+    color: #1d3557;
+}
+
+button {
+    padding: 0.75rem 1rem;
+    border: none;
+    border-radius: 999px;
+    background: #e63946;
+    color: white;
+    font-size: 1rem;
+    font-weight: 600;
+    cursor: pointer;
+    transition: transform 0.15s ease, box-shadow 0.15s ease;
+}
+
+button:hover {
+    transform: translateY(-1px);
+    box-shadow: 0 10px 20px rgba(0, 0, 0, 0.3);
+}
+
+pre {
+    white-space: pre-wrap;
+    font-family: "SFMono-Regular", Consolas, "Liberation Mono", Menlo, monospace;
+    background: rgba(0, 0, 0, 0.35);
+    padding: 1rem;
+    border-radius: 8px;
+    overflow-x: auto;
+}
+
+ol {
+    margin: 0;
+    padding-left: 1.2rem;
+}
+
+#results li + li {
+    margin-top: 0.75rem;
+}
+
+#results a {
+    color: #a8dadc;
+}
+
+@media (max-width: 720px) {
+    main {
+        padding-bottom: 2rem;
+    }
+
+    .card {
+        padding: 1.25rem;
+    }
+}
