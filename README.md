@@ -70,11 +70,41 @@ This project demonstrates a simple Retrieval-Augmented Generation (RAG) pipeline
 
 ## Usage
 
-### Basic Usage
+### Web Interface
+
+Run the web server:
+```bash
+python server.py
+```
+
+Then open your browser to `http://localhost:8000`.
+
+The web interface allows you to:
+-   Switch between `search`, `local`, and `hybrid` RAG modes.
+-   Upload local files for the `local` and `hybrid` modes.
+-   Configure the LLM provider and other parameters.
+
+### Command-Line Interface
+
+#### Search RAG
 
 Run the main script with your query (uses GLM by default):
 ```bash
 python main.py "your query here"
+```
+
+#### Local RAG
+
+Run the main script with your query and specify the path to your local files:
+```bash
+python main.py "your query here" --mode local --data-path ./data
+```
+
+#### Hybrid RAG
+
+Combine web search with your local documents:
+```bash
+python main.py "your query here" --mode hybrid --data-path ./data
 ```
 
 ### Override LLM Provider

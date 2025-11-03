@@ -9,14 +9,24 @@
 <body>
     <header>
         <h1>NLP Project Demo</h1>
-        <p>Ask a question and the Retrieval-Augmented Generation pipeline will answer using live search results.</p>
+        <p>Ask a question and the Retrieval-Augmented Generation pipeline will answer using live search results or local files.</p>
     </header>
 
     <main>
         <section class="card">
+            <h2>Query</h2>
             <form id="query-form">
                 <label for="query">Question</label>
                 <textarea id="query" name="query" rows="3" placeholder="What is the latest news about electric vehicles?" required></textarea>
+
+                <div class="form-row">
+                    <label for="mode">RAG Mode</label>
+                    <select id="mode" name="mode">
+                        <option value="search">Web Search</option>
+                        <option value="local">Local Files</option>
+                        <option value="hybrid">Web + Local (Hybrid)</option>
+                    </select>
+                </div>
 
                 <div class="form-row">
                     <label for="provider">Provider</label>
@@ -31,7 +41,7 @@
                 </div>
 
                 <div class="form-row">
-                    <label for="num-results">Search Results</label>
+                    <label for="num-results">Search/Retrieved Docs</label>
                     <input type="number" id="num-results" name="num_results" min="1" max="10" value="5">
                 </div>
 
@@ -49,6 +59,19 @@
             </form>
         </section>
 
+        <section class="card">
+            <h2>Local Files</h2>
+            <form id="upload-form">
+                <label for="file-input">Upload a File</label>
+                <input type="file" id="file-input" name="file">
+                <button type="submit">Upload</button>
+            </form>
+            <div id="file-list-container">
+                <h3>Uploaded Files</h3>
+                <ul id="file-list"></ul>
+            </div>
+        </section>
+
         <section class="card" id="status-card" hidden>
             <h2>Status</h2>
             <p id="status-message"></p>
@@ -62,6 +85,11 @@
         <section class="card" id="results-card" hidden>
             <h2>Search Results</h2>
             <ol id="results"></ol>
+        </section>
+        
+        <section class="card" id="retrieved-docs-card" hidden>
+            <h2>Retrieved Documents</h2>
+            <ul id="retrieved-docs"></ul>
         </section>
     </main>
 

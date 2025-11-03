@@ -6,6 +6,8 @@ from typing import Optional
 from api import LLMClient, HKGAIClient
 from no_rag_baseline import NoRAGBaseline
 from search import SerpAPISearchClient
+from local_rag import LocalRAG
+from hybrid_rag import HybridRAG
 
 
 def build_search_client(api_key: Optional[str]) -> SerpAPISearchClient:
@@ -20,6 +22,19 @@ def build_search_client(api_key: Optional[str]) -> SerpAPISearchClient:
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Run the No-RAG baseline pipeline.")
     parser.add_argument("query", help="User question to answer using search + LLM.")
+    parser.add_argument(
+        "--mode",
+        type=str,
+        default="search",
+        choices=["search", "local", "hybrid"],
+        help="RAG mode: 'search' for web search, 'local' for local files, 'hybrid' for both.",
+    )
+    parser.add_argument(
+        "--data-path",
+        type=str,
+        default="./data",
+        help="Path to the directory containing local files for local RAG mode.",
+    )
     parser.add_argument(
         "--max-tokens",
         type=int,
@@ -86,18 +101,41 @@ def main() -> None:
     if args.provider:
         config["LLM_PROVIDER"] = args.provider
 
-    serpapi_api_key = config.get("SERPAPI_API_KEY")
     llm_client = build_llm_client(config)
-    search_client = build_search_client(serpapi_api_key)
 
-    pipeline = NoRAGBaseline(llm_client=llm_client, search_client=search_client)
-
-    result = pipeline.answer(
-        args.query,
-        num_search_results=args.num_results,
-        max_tokens=args.max_tokens,
-        temperature=args.temperature,
-    )
+    if args.mode == "search":
+        serpapi_api_key = config.get("SERPAPI_API_KEY")
+        search_client = build_search_client(serpapi_api_key)
+        pipeline = NoRAGBaseline(llm_client=llm_client, search_client=search_client)
+        result = pipeline.answer(
+            args.query,
+            num_search_results=args.num_results,
+            max_tokens=args.max_tokens,
+            temperature=args.temperature,
+        )
+    elif args.mode == "local":
+        pipeline = LocalRAG(llm_client=llm_client, data_path=args.data_path)
+        result = pipeline.answer(
+            args.query,
+            num_retrieved_docs=args.num_results,
+            max_tokens=args.max_tokens,
+            temperature=args.temperature,
+        )
+    elif args.mode == "hybrid":
+        serpapi_api_key = config.get("SERPAPI_API_KEY")
+        search_client = build_search_client(serpapi_api_key)
+        pipeline = HybridRAG(
+            llm_client=llm_client,
+            search_client=search_client,
+            data_path=args.data_path,
+        )
+        result = pipeline.answer(
+            args.query,
+            num_search_results=args.num_results,
+            num_retrieved_docs=args.num_results,
+            max_tokens=args.max_tokens,
+            temperature=args.temperature,
+        )
 
     # Check if there are any errors or warnings
     has_error = result.get("llm_error") is not None

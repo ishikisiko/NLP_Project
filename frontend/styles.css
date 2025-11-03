@@ -21,7 +21,7 @@ header, footer {
 
 main {
     flex: 1;
-    display: grid;
+    display: block;
     gap: 1.5rem;
     max-width: 960px;
     margin: 0 auto 3rem;
