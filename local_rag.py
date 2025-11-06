@@ -156,4 +156,5 @@ class LocalRAG:
             "llm_raw": response.get("raw"),
             "llm_warning": response.get("warning"),
             "llm_error": response.get("error"),
+            "search_hits": [],
         }

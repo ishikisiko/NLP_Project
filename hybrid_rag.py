@@ -107,20 +107,24 @@ class HybridRAG:
         self,
         query: str,
         *,
+        search_query: Optional[str] = None,
         num_search_results: int = 5,
         num_retrieved_docs: int = 5,
         max_tokens: int = 5000,
         temperature: float = 0.3,
+        enable_search: bool = True,
     ) -> Dict[str, object]:
         hits: List[SearchHit] = []
-        try:
-            hits = self.search_client.search(query, num_results=num_search_results)
-        except Exception as exc:
-            # Surface search errors while still letting the LLM see local docs
-            hits = []
-            search_error = str(exc)
-        else:
-            search_error = None
+        effective_query = search_query.strip() if search_query else query
+        search_error: Optional[str] = None
+
+        if enable_search:
+            try:
+                hits = self.search_client.search(effective_query, num_results=num_search_results)
+            except Exception as exc:
+                # Surface search errors while still letting the LLM see local docs
+                hits = []
+                search_error = str(exc)
 
         hits, rerank_meta = self._apply_rerank(query, hits, limit=num_search_results)
 
@@ -163,6 +167,7 @@ class HybridRAG:
         }
         if search_error:
             payload["search_error"] = search_error
+        payload["search_query"] = effective_query if enable_search else None
         return payload
 
     def _apply_rerank(

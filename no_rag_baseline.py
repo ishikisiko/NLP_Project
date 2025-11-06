@@ -68,11 +68,15 @@ class NoRAGBaseline:
         self,
         query: str,
         *,
+        search_query: Optional[str] = None,
         num_search_results: int = 5,
         max_tokens: int = 5000,
         temperature: float = 0.3,
     ) -> Dict[str, object]:
-        hits = self.search_client.search(query, num_results=num_search_results)
+        # Prefer keyword-focused query generated upstream when available.
+        effective_query = search_query.strip() if search_query else query
+
+        hits = self.search_client.search(effective_query, num_results=num_search_results)
         hits, rerank_meta = self._apply_rerank(query, hits, limit=num_search_results)
         user_prompt = self.build_prompt(query, hits)
         response = self.llm_client.chat(
@@ -100,6 +104,7 @@ class NoRAGBaseline:
             "llm_warning": response.get("warning"),
             "llm_error": response.get("error"),
             "rerank": rerank_meta or None,
+            "search_query": effective_query,
         }
 
     def _apply_rerank(

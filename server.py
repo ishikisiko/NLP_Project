@@ -7,13 +7,11 @@ import os
 from functools import lru_cache
 from typing import Any, Dict, Optional
 
-from flask import Flask, jsonify, request, send_from_directory
+from flask import Flask, jsonify, request
 from werkzeug.utils import secure_filename
 
-from main import build_llm_client, build_search_client
-from no_rag_baseline import NoRAGBaseline
-from local_rag import LocalRAG
-from hybrid_rag import HybridRAG
+from main import build_llm_client, build_search_client, build_reranker
+from smart_orchestrator import SmartSearchOrchestrator
 
 app = Flask(__name__, static_folder="frontend", static_url_path="")
 UPLOAD_FOLDER = 'uploads'
@@ -42,7 +40,7 @@ def load_base_config() -> Dict[str, Any]:
         return json.load(config_file)
 
 
-def build_pipeline(provider_override: Optional[str] = None, mode: str = "search") -> NoRAGBaseline | LocalRAG | HybridRAG:
+def build_pipeline(provider_override: Optional[str] = None) -> SmartSearchOrchestrator:
     """Create a pipeline configured for the current request."""
 
     config = load_base_config().copy()
@@ -55,18 +53,36 @@ def build_pipeline(provider_override: Optional[str] = None, mode: str = "search"
     except Exception as exc:
         raise ConfigurationError(f"Failed to build LLM client: {exc}")
 
-    if mode == "search":
-        search_client = build_search_client(config.get("SERPAPI_API_KEY"))
-        return NoRAGBaseline(llm_client=llm_client, search_client=search_client)
-    elif mode == "local":
-        return LocalRAG(llm_client=llm_client, data_path=app.config['UPLOAD_FOLDER'])
-    elif mode == "hybrid":
-        search_client = build_search_client(config.get("SERPAPI_API_KEY"))
-        return HybridRAG(
-            llm_client=llm_client,
-            search_client=search_client,
-            data_path=app.config['UPLOAD_FOLDER'],
-        )
+    serpapi_key = config.get("SERPAPI_API_KEY")
+    search_client = None
+    if serpapi_key:
+        try:
+            search_client = build_search_client(serpapi_key)
+        except Exception as exc:
+            raise ConfigurationError(f"Failed to build search client: {exc}")
+
+    rerank_config = config.get("rerank") or {}
+    reranker: Optional[Any] = None
+    try:
+        reranker, rerank_config = build_reranker(config)
+    except ValueError as exc:
+        print(f"[server] Reranker disabled: {exc}")
+        reranker = None
+        rerank_config = config.get("rerank") or {}
+    except Exception as exc:  # pragma: no cover - defensive fallback
+        raise ConfigurationError(f"Unexpected reranker error: {exc}")
+
+    min_rerank_score = float(rerank_config.get("min_score", 0.0))
+    max_per_domain = max(1, int(rerank_config.get("max_per_domain", 1)))
+
+    return SmartSearchOrchestrator(
+        llm_client=llm_client,
+        search_client=search_client,
+        data_path=app.config['UPLOAD_FOLDER'],
+        reranker=reranker,
+        min_rerank_score=min_rerank_score,
+        max_per_domain=max_per_domain,
+    )
 
 
 @app.route("/")
@@ -106,49 +122,35 @@ def delete_file(filename):
 def answer() -> Any:
     payload: Dict[str, Any] = request.get_json(silent=True) or {}
     query = (payload.get("query") or "").strip()
-    mode = (payload.get("mode") or "search").strip()
 
     if not query:
         return jsonify({"error": "Missing 'query' in request body."}), 400
 
     try:
-        pipeline = build_pipeline(payload.get("provider") or None, mode)
+        pipeline = build_pipeline(payload.get("provider") or None)
     except ConfigurationError as exc:
         return jsonify({"error": str(exc)}), 500
     except Exception as exc:  # pragma: no cover - defensive fallback
         return jsonify({"error": f"Failed to build pipeline: {exc}"}), 500
 
+    search_pref = (payload.get("search") or "").strip().lower()
+    if search_pref in {"on", "off"}:
+        allow_search = search_pref == "on"
+    else:
+        legacy_mode = (payload.get("mode") or "search").strip().lower()
+        allow_search = legacy_mode != "local"
+
+    num_value = int(payload.get("num_results")) if payload.get("num_results") else 5
+
     try:
-        if mode == "search":
-            result = pipeline.answer(
-                query,
-                num_search_results=int(payload.get("num_results")) if payload.get("num_results") else 5,
-                max_tokens=int(payload.get("max_tokens")) if payload.get("max_tokens") else 5000,
-                temperature=float(payload.get("temperature")) if payload.get("temperature") else 0.3,
-            )
-        elif mode == "local":
-            result = pipeline.answer(
-                query,
-                num_retrieved_docs=int(payload.get("num_results")) if payload.get("num_results") else 5,
-                max_tokens=int(payload.get("max_tokens")) if payload.get("max_tokens") else 5000,
-                temperature=float(payload.get("temperature")) if payload.get("temperature") else 0.3,
-            )
-        elif mode == "hybrid":
-            num_value = int(payload.get("num_results")) if payload.get("num_results") else 5
-            result = pipeline.answer(
-                query,
-                num_search_results=num_value,
-                num_retrieved_docs=num_value,
-                max_tokens=int(payload.get("max_tokens")) if payload.get("max_tokens") else 5000,
-                temperature=float(payload.get("temperature")) if payload.get("temperature") else 0.3,
-            )
-        else:
-            result = pipeline.answer(
-                query,
-                num_retrieved_docs=int(payload.get("num_results")) if payload.get("num_results") else 5,
-                max_tokens=int(payload.get("max_tokens")) if payload.get("max_tokens") else 5000,
-                temperature=float(payload.get("temperature")) if payload.get("temperature") else 0.3,
-            )
+        result = pipeline.answer(
+            query,
+            num_search_results=num_value,
+            num_retrieved_docs=num_value,
+            max_tokens=int(payload.get("max_tokens")) if payload.get("max_tokens") else 5000,
+            temperature=float(payload.get("temperature")) if payload.get("temperature") else 0.3,
+            allow_search=allow_search,
+        )
     except Exception as exc:  # pragma: no cover - propagate runtime issues
         return jsonify({"error": f"Pipeline execution failed: {exc}"}), 500
 

@@ -1,101 +1,69 @@
 <!DOCTYPE html>
-<html lang="en">
+<html lang="zh-CN">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>NLP Project Demo</title>
+    <title>智能问答助手</title>
     <link rel="stylesheet" href="styles.css">
 </head>
 <body>
-    <header>
-        <h1>NLP Project Demo</h1>
-        <p>Ask a question and the Retrieval-Augmented Generation pipeline will answer using live search results or local files.</p>
-    </header>
+    <div class="app-shell">
+        <header class="hero">
+            <h1>有什么可以帮助您</h1>
+            <p>How can we help you today?</p>
+        </header>
 
-    <main>
-        <section class="card">
-            <h2>Query</h2>
-            <form id="query-form">
-                <label for="query">Question</label>
-                <textarea id="query" name="query" rows="3" placeholder="What is the latest news about electric vehicles?" required></textarea>
+        <main class="chat-shell">
+            <section id="chat-log" class="chat-log" aria-live="polite" aria-label="对话内容"></section>
 
-                <div class="form-row">
-                    <label for="mode">RAG Mode</label>
-                    <select id="mode" name="mode">
-                        <option value="search">Web Search</option>
-                        <option value="local">Local Files</option>
-                        <option value="hybrid">Web + Local (Hybrid)</option>
-                    </select>
+            <form id="query-form" class="composer" autocomplete="off">
+                <div class="composer-input">
+                    <textarea
+                        id="query"
+                        name="query"
+                        rows="3"
+                        placeholder="发送您的问题，例如：介绍一下检索增强生成的优势"
+                        required
+                    ></textarea>
                 </div>
 
-                <div class="form-row">
-                    <label for="provider">Provider</label>
-                    <select id="provider" name="provider">
-                        <option value="">Use default</option>
-                        <option value="openai">OpenAI</option>
-                        <option value="anthropic">Anthropic</option>
-                        <option value="google">Google</option>
-                        <option value="glm">GLM</option>
-                        <option value="hkgai">HKGAI</option>
-                    </select>
+                <div class="composer-controls">
+                    <label class="control-field">
+                        <span>模型选择</span>
+                        <select id="provider" name="provider">
+                            <option value="">默认模型</option>
+                            <option value="openai">OpenAI</option>
+                            <option value="anthropic">Anthropic</option>
+                            <option value="google">Google</option>
+                            <option value="glm">GLM</option>
+                            <option value="hkgai">HKGAI</option>
+                        </select>
+                    </label>
+
+                    <label class="control-field toggle-field">
+                        <span>联网搜索</span>
+                        <div class="toggle">
+                            <input type="checkbox" id="search-toggle" name="search" checked>
+                            <span class="toggle-slider" aria-hidden="true"></span>
+                        </div>
+                    </label>
+
+                    <div class="control-field upload-field">
+                        <span>文件上传</span>
+                        <button type="button" id="upload-button">选择文件</button>
+                        <input type="file" id="file-input" hidden multiple>
+                    </div>
                 </div>
 
-                <div class="form-row">
-                    <label for="num-results">Search/Retrieved Docs</label>
-                    <input type="number" id="num-results" name="num_results" min="1" max="10" value="5">
-                </div>
+                <div class="file-chip-list" id="file-list" aria-live="polite"></div>
 
-                <div class="form-row">
-                    <label for="max-tokens">Max Tokens</label>
-                    <input type="number" id="max-tokens" name="max_tokens" min="100" max="8000" value="5000">
+                <div class="composer-footer">
+                    <span id="status-message" class="status" role="status"></span>
+                    <button type="submit" class="send-btn">发送</button>
                 </div>
-
-                <div class="form-row">
-                    <label for="temperature">Temperature</label>
-                    <input type="number" id="temperature" name="temperature" min="0" max="1" step="0.1" value="0.3">
-                </div>
-
-                <button type="submit">Ask</button>
             </form>
-        </section>
-
-        <section class="card">
-            <h2>Local Files</h2>
-            <form id="upload-form">
-                <label for="file-input">Upload a File</label>
-                <input type="file" id="file-input" name="file">
-                <button type="submit">Upload</button>
-            </form>
-            <div id="file-list-container">
-                <h3>Uploaded Files</h3>
-                <ul id="file-list"></ul>
-            </div>
-        </section>
-
-        <section class="card" id="status-card" hidden>
-            <h2>Status</h2>
-            <p id="status-message"></p>
-        </section>
-
-        <section class="card" id="answer-card" hidden>
-            <h2>Answer</h2>
-            <pre id="answer"></pre>
-        </section>
-
-        <section class="card" id="results-card" hidden>
-            <h2>Search Results</h2>
-            <ol id="results"></ol>
-        </section>
-        
-        <section class="card" id="retrieved-docs-card" hidden>
-            <h2>Retrieved Documents</h2>
-            <ul id="retrieved-docs"></ul>
-        </section>
-    </main>
-
-    <footer>
-        <p>Configure API keys in <code>config.json</code> before starting the server.</p>
-    </footer>
+        </main>
+    </div>
 
     <script src="script.js" defer></script>
 </body>
