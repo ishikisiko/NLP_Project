@@ -1,5 +1,6 @@
 {
     "LLM_PROVIDER": "glm",
+    "RERANK_PROVIDER": "qwen3-rerank",
     "SERPAPI_API_KEY": "YOUR_SERPAPI_API_KEY_HERE",
     "providers": {
         "openai": {
@@ -26,6 +27,18 @@
             "api_key": "YOUR_GLM_API_KEY_HERE",
             "model": "glm-4.6",
             "base_url": "https://open.bigmodel.cn/api/coding/paas/v4"
+        }
+    },
+    "rerank": {
+        "min_score": 0.0,
+        "max_per_domain": 1,
+        "providers": {
+            "qwen": {
+                "api_key": "YOUR_DASHSCOPE_API_KEY_HERE",
+                "model": "qwen3-rerank",
+                "base_url": "https://dashscope.aliyuncs.com/api/v1/services/rerank",
+                "timeout": 15
+            }
         }
     }
 }

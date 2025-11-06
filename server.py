@@ -49,7 +49,12 @@ def build_pipeline(provider_override: Optional[str] = None, mode: str = "search"
     if provider_override:
         config["LLM_PROVIDER"] = provider_override
 
-    llm_client = build_llm_client(config)
+    # Build LLM client with enhanced error handling
+    try:
+        llm_client = build_llm_client(config)
+    except Exception as exc:
+        raise ConfigurationError(f"Failed to build LLM client: {exc}")
+
     if mode == "search":
         search_client = build_search_client(config.get("SERPAPI_API_KEY"))
         return NoRAGBaseline(llm_client=llm_client, search_client=search_client)

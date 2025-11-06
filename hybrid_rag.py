@@ -2,11 +2,13 @@ from __future__ import annotations
 
 import textwrap
 from dataclasses import asdict
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Tuple
+from urllib.parse import urlparse
 
 from api import LLMClient
 from local_rag import Document, FileReader, TextSplitter, VectorStore
 from search import SearchClient, SearchHit
+from rerank import BaseReranker
 
 
 HYBRID_SYSTEM_PROMPT = (
@@ -29,9 +31,15 @@ class HybridRAG:
         chunk_size: int = 1000,
         chunk_overlap: int = 200,
         embedding_model: str = "all-MiniLM-L6-v2",
+        reranker: Optional[BaseReranker] = None,
+        min_rerank_score: float = 0.0,
+        max_per_domain: int = 1,
     ) -> None:
         self.llm_client = llm_client
         self.search_client = search_client
+        self.reranker = reranker
+        self.min_rerank_score = min_rerank_score
+        self.max_per_domain = max(1, max_per_domain)
 
         reader = FileReader(data_path)
         documents = reader.load()
@@ -114,6 +122,8 @@ class HybridRAG:
         else:
             search_error = None
 
+        hits, rerank_meta = self._apply_rerank(query, hits, limit=num_search_results)
+
         retrieved_docs: List[Document] = []
         if self._indexed_chunks:
             retrieved_docs = self.vector_store.search(query, k=num_retrieved_docs)
@@ -149,7 +159,75 @@ class HybridRAG:
             "llm_raw": response.get("raw"),
             "llm_warning": response.get("warning"),
             "llm_error": response.get("error"),
+            "rerank": rerank_meta or None,
         }
         if search_error:
             payload["search_error"] = search_error
         return payload
+
+    def _apply_rerank(
+        self,
+        query: str,
+        hits: List[SearchHit],
+        *,
+        limit: Optional[int] = None,
+    ) -> Tuple[List[SearchHit], List[Dict[str, object]]]:
+        if not self.reranker or not hits:
+            return hits, []
+
+        try:
+            reranked = self.reranker.rerank(query, hits)
+        except Exception as exc:  # pragma: no cover - defensive fallback
+            return hits, [{"error": str(exc)}]
+
+        filtered: List[SearchHit] = []
+        metadata: List[Dict[str, object]] = []
+        domain_counts: Dict[str, int] = {}
+        max_results = limit or len(reranked)
+
+        for item in reranked:
+            domain = self._extract_domain(item.hit.url)
+            if domain and domain_counts.get(domain, 0) >= self.max_per_domain:
+                metadata.append(
+                    {
+                        "url": item.hit.url,
+                        "score": item.score,
+                        "dropped": "per_domain_limit",
+                    }
+                )
+                continue
+            if item.score is not None and item.score < self.min_rerank_score:
+                metadata.append(
+                    {
+                        "url": item.hit.url,
+                        "score": item.score,
+                        "dropped": "below_min_score",
+                    }
+                )
+                continue
+
+            filtered.append(item.hit)
+            metadata.append(
+                {
+                    "url": item.hit.url,
+                    "score": item.score,
+                    "kept": True,
+                }
+            )
+
+            if domain:
+                domain_counts[domain] = domain_counts.get(domain, 0) + 1
+
+            if len(filtered) >= max_results:
+                break
+
+        if not filtered:
+            return hits, metadata
+
+        return filtered, metadata
+
+    @staticmethod
+    def _extract_domain(url: str) -> Optional[str]:
+        if not url:
+            return None
+        return urlparse(url).netloc or None

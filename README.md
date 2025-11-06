@@ -23,6 +23,7 @@ This project demonstrates a simple Retrieval-Augmented Generation (RAG) pipeline
     ```json
     {
         "LLM_PROVIDER": "glm",
+        "RERANK_PROVIDER": "qwen3-rerank",
         "SERPAPI_API_KEY": "YOUR_SERPAPI_API_KEY_HERE",
         "providers": {
             "openai": {
@@ -50,6 +51,18 @@ This project demonstrates a simple Retrieval-Augmented Generation (RAG) pipeline
                 "model": "glm-4.6",
                 "base_url": "https://open.bigmodel.cn/api/coding/paas/v4/"
             }
+        },
+        "rerank": {
+            "min_score": 0.0,
+            "max_per_domain": 1,
+            "providers": {
+                "qwen": {
+                    "api_key": "YOUR_DASHSCOPE_API_KEY_HERE",
+                    "model": "qwen3-rerank",
+                    "base_url": "https://dashscope.aliyuncs.com/api/v1/services/rerank",
+                    "timeout": 15
+                }
+            }
         }
     }
     ```
@@ -67,6 +80,7 @@ This project demonstrates a simple Retrieval-Augmented Generation (RAG) pipeline
 - `LLM_PROVIDER`: Choose your preferred LLM provider (`openai`, `anthropic`, `google`, `glm`, `hkgai`)
 - `SERPAPI_API_KEY`: Your API key for the SerpAPI service (required for search functionality)
 - Provider-specific API keys in the `providers` section
+- `RERANK_PROVIDER`: Optional reranking backend (`qwen3-rerank`). Provide the corresponding credentials under `rerank.providers`
 
 ## Usage
 
@@ -134,6 +148,7 @@ python main.py "your query here" \
     --max-tokens 1000 \
     --temperature 0.7 \
     --num-results 10 \
+    --disable-rerank \
     --pretty
 ```
 
@@ -141,3 +156,4 @@ python main.py "your query here" \
 - `--temperature`: Sampling temperature (0.0-1.0)
 - `--num-results`: Number of search results to include
 - `--pretty`: Pretty print the JSON response
+- `--disable-rerank`: Skip reranking even if configured

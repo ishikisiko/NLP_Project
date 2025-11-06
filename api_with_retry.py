@@ -5,19 +5,18 @@ from typing import Any, Dict, List, Optional
 
 import requests
 from requests.adapters import HTTPAdapter
-from requests.exceptions import ConnectionError, Timeout, RequestException
 from urllib3.util.retry import Retry
 
 
-class LLMClient:
-    """Universal client for various LLM API endpoints with enhanced error handling."""
+class RobustLLMClient:
+    """增强版LLM客户端，包含重试机制和错误处理。"""
 
     def __init__(
         self,
         api_key: Optional[str] = None,
         model_id: str = "gpt-3.5-turbo",
         base_url: str = "https://api.openai.com/v1",
-        request_timeout: int = 60,
+        request_timeout: int = 300,
         provider: str = "openai",
         max_retries: int = 3,
         backoff_factor: float = 1.0
@@ -33,7 +32,7 @@ class LLMClient:
         if not self.api_key:
             raise ValueError(f"{provider.upper()}_API_KEY must be provided.")
         
-        # Set headers based on provider
+        # 设置headers
         self.headers = {
             "Content-Type": "application/json",
         }
@@ -48,10 +47,9 @@ class LLMClient:
         elif provider == "glm":
             self.headers["Authorization"] = f"Bearer {self.api_key}"
         else:
-            # Default to Bearer token
             self.headers["Authorization"] = f"Bearer {self.api_key}"
 
-        # Configure session with retry strategy
+        # 配置重试策略
         self.session = requests.Session()
         retry_strategy = Retry(
             total=max_retries,
@@ -71,10 +69,10 @@ class LLMClient:
         temperature: float = 0.7,
         extra_messages: Optional[List[Dict[str, str]]] = None,
     ) -> Dict[str, Any]:
-        """Chat method for OpenAI-compatible APIs with enhanced error handling."""
+        """Chat方法，包含重试逻辑。"""
         endpoint = f"{self.base_url}/chat/completions"
         
-        # Build messages array
+        # 构建消息数组
         messages = [{"role": "system", "content": system_prompt}]
         if extra_messages:
             messages.extend(extra_messages)
@@ -87,7 +85,7 @@ class LLMClient:
             "temperature": temperature,
         }
 
-        # GLM-specific adjustments
+        # GLM特定调整
         if self.provider == "glm":
             payload["stream"] = False
 
@@ -104,48 +102,21 @@ class LLMClient:
                 response.raise_for_status()
                 break
                 
-            except ConnectionError as exc:
+            except requests.exceptions.RequestException as exc:
                 last_error = exc
-                if "Connection aborted" in str(exc) or "RemoteDisconnected" in str(exc):
-                    error_msg = f"连接被远程服务器断开: {str(exc)}"
-                else:
-                    error_msg = f"网络连接错误: {str(exc)}"
-                    
                 if attempt < self.max_retries:
                     wait_time = self.backoff_factor * (2 ** attempt)
-                    print(f"网络连接失败，{wait_time}秒后重试 (尝试 {attempt + 1}/{self.max_retries + 1}): {error_msg}")
+                    print(f"请求失败，{wait_time}秒后重试 (尝试 {attempt + 1}/{self.max_retries + 1}): {exc}")
                     time.sleep(wait_time)
                 else:
-                    return {"error": f"经过 {self.max_retries + 1} 次重试后仍然失败: {error_msg}"}
-                    
-            except Timeout as exc:
-                last_error = exc
-                error_msg = f"请求超时 ({self.request_timeout}秒): {str(exc)}"
-                
-                if attempt < self.max_retries:
-                    wait_time = self.backoff_factor * (2 ** attempt)
-                    print(f"请求超时，{wait_time}秒后重试 (尝试 {attempt + 1}/{self.max_retries + 1})")
-                    time.sleep(wait_time)
-                else:
-                    return {"error": f"经过 {self.max_retries + 1} 次重试后仍然超时: {error_msg}"}
-                    
-            except RequestException as exc:
-                last_error = exc
-                error_msg = f"请求错误: {str(exc)}"
-                
-                if attempt < self.max_retries:
-                    wait_time = self.backoff_factor * (2 ** attempt)
-                    print(f"请求失败，{wait_time}秒后重试 (尝试 {attempt + 1}/{self.max_retries + 1}): {error_msg}")
-                    time.sleep(wait_time)
-                else:
-                    return {"error": f"经过 {self.max_retries + 1} 次重试后仍然失败: {error_msg}"}
+                    return {"error": f"经过 {self.max_retries + 1} 次重试后仍然失败: {str(exc)}"}
         else:
-            return {"error": f"请求最终失败: {str(last_error)}"}
+            return {"error": f"请求失败: {str(last_error)}"}
 
         try:
             data = response.json()
         except json.JSONDecodeError as exc:
-            return {"error": f"响应JSON解析失败: {str(exc)}"}
+            return {"error": f"JSON解析失败: {str(exc)}"}
 
         content = ""
         try:
@@ -158,8 +129,8 @@ class LLMClient:
                 # Fallback to text-based schema
                 if not content:
                     content = (first.get("text") or "").strip()
-        except Exception as exc:
-            print(f"解析响应内容时出错: {exc}")
+        except Exception:
+            pass
 
         if not content:
             finish_reason = None
@@ -177,21 +148,33 @@ class LLMClient:
         return {"content": content, "raw": data}
 
 
-class HKGAIClient(LLMClient):
-    """Legacy wrapper for HKGAI service."""
-    
-    def __init__(self, api_key: Optional[str] = None) -> None:
-        super().__init__(
-            api_key=api_key,
-            model_id="HKGAI-V1",
-            base_url="https://oneapi.hkgai.net/v1",
-            provider="hkgai"
-        )
-
-
+# 使用示例
 if __name__ == "__main__":
-    client = HKGAIClient()
-    system_prompt = "You are a helpful AI assistant providing concise and accurate responses."
-    user_prompt = "what is the capital of China?"
-    result = client.chat(system_prompt, user_prompt)
-    print(json.dumps(result, indent=2))
+    # 测试GLM API连接
+    config = {
+        "providers": {
+            "glm": {
+                "api_key": "2f7ee24f777f44e3a6ca78b537c4e315.AU1xVz8F5ttgGMXM",
+                "model": "glm-4.6",
+                "base_url": "https://open.bigmodel.cn/api/coding/paas/v4"
+            }
+        }
+    }
+    
+    client = RobustLLMClient(
+        api_key=config["providers"]["glm"]["api_key"],
+        model_id=config["providers"]["glm"]["model"],
+        base_url=config["providers"]["glm"]["base_url"],
+        provider="glm",
+        max_retries=3,
+        backoff_factor=2.0
+    )
+    
+    result = client.chat(
+        system_prompt="你是一个有用的AI助手。",
+        user_prompt="你好，请简单介绍一下自己。",
+        max_tokens=1000,
+        temperature=0.7
+    )
+    
+    print("结果:", json.dumps(result, indent=2, ensure_ascii=False))

@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 from dataclasses import asdict
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Tuple
+from urllib.parse import urlparse
 
 from api import HKGAIClient
 from search import SearchClient, SearchHit
+from rerank import BaseReranker
 
 
 DEFAULT_SYSTEM_PROMPT = (
@@ -22,10 +24,17 @@ class NoRAGBaseline:
         llm_client: HKGAIClient,
         search_client: SearchClient,
         system_prompt: str = DEFAULT_SYSTEM_PROMPT,
+        *,
+        reranker: Optional[BaseReranker] = None,
+        min_rerank_score: float = 0.0,
+        max_per_domain: int = 1,
     ) -> None:
         self.llm_client = llm_client
         self.search_client = search_client
         self.system_prompt = system_prompt
+        self.reranker = reranker
+        self.min_rerank_score = min_rerank_score
+        self.max_per_domain = max(1, max_per_domain)
 
     def _format_search_hits(self, hits: List[SearchHit]) -> str:
         if not hits:
@@ -64,6 +73,7 @@ class NoRAGBaseline:
         temperature: float = 0.3,
     ) -> Dict[str, object]:
         hits = self.search_client.search(query, num_results=num_search_results)
+        hits, rerank_meta = self._apply_rerank(query, hits, limit=num_search_results)
         user_prompt = self.build_prompt(query, hits)
         response = self.llm_client.chat(
             system_prompt=self.system_prompt,
@@ -89,4 +99,72 @@ class NoRAGBaseline:
             "llm_raw": response.get("raw"),
             "llm_warning": response.get("warning"),
             "llm_error": response.get("error"),
+            "rerank": rerank_meta or None,
         }
+
+    def _apply_rerank(
+        self,
+        query: str,
+        hits: List[SearchHit],
+        *,
+        limit: Optional[int] = None,
+    ) -> Tuple[List[SearchHit], List[Dict[str, object]]]:
+        if not self.reranker or not hits:
+            return hits, []
+
+        try:
+            reranked = self.reranker.rerank(query, hits)
+        except Exception as exc:  # pragma: no cover - best effort resilience
+            return hits, [{"error": str(exc)}]
+
+        filtered: List[SearchHit] = []
+        metadata: List[Dict[str, object]] = []
+        domain_counts: Dict[str, int] = {}
+        max_results = limit or len(reranked)
+
+        for item in reranked:
+            domain = self._extract_domain(item.hit.url)
+            if domain and domain_counts.get(domain, 0) >= self.max_per_domain:
+                metadata.append(
+                    {
+                        "url": item.hit.url,
+                        "score": item.score,
+                        "dropped": "per_domain_limit",
+                    }
+                )
+                continue
+            if item.score is not None and item.score < self.min_rerank_score:
+                metadata.append(
+                    {
+                        "url": item.hit.url,
+                        "score": item.score,
+                        "dropped": "below_min_score",
+                    }
+                )
+                continue
+
+            filtered.append(item.hit)
+            metadata.append(
+                {
+                    "url": item.hit.url,
+                    "score": item.score,
+                    "kept": True,
+                }
+            )
+
+            if domain:
+                domain_counts[domain] = domain_counts.get(domain, 0) + 1
+
+            if len(filtered) >= max_results:
+                break
+
+        if not filtered:
+            return hits, metadata
+
+        return filtered, metadata
+
+    @staticmethod
+    def _extract_domain(url: str) -> Optional[str]:
+        if not url:
+            return None
+        return urlparse(url).netloc or None

@@ -1,13 +1,14 @@
 import argparse
 import json
 import os
-from typing import Optional
+from typing import Optional, Tuple, Dict, Any
 
 from api import LLMClient, HKGAIClient
 from no_rag_baseline import NoRAGBaseline
 from search import SerpAPISearchClient
 from local_rag import LocalRAG
 from hybrid_rag import HybridRAG
+from rerank import BaseReranker, Qwen3Reranker
 
 
 def build_search_client(api_key: Optional[str]) -> SerpAPISearchClient:
@@ -63,6 +64,11 @@ def parse_args() -> argparse.Namespace:
         type=str,
         help="Override the LLM provider (openai, anthropic, google, glm, hkgai).",
     )
+    parser.add_argument(
+        "--disable-rerank",
+        action="store_true",
+        help="Skip search result reranking even if configured.",
+    )
     return parser.parse_args()
 
 
@@ -83,12 +89,57 @@ def build_llm_client(config: dict) -> LLMClient:
     if not provider_config:
         raise ValueError(f"Provider '{provider}' not found in configuration")
     
+    # Get global LLM settings
+    llm_settings = config.get("llm_settings", {})
+    default_timeout = llm_settings.get("default_timeout", 60)
+    max_retries = llm_settings.get("max_retries", 3)
+    backoff_factor = llm_settings.get("backoff_factor", 2.0)
+    
+    # Provider-specific timeout (fallback to global)
+    provider_timeout = provider_config.get("request_timeout", default_timeout)
+    provider_max_retries = provider_config.get("max_retries", max_retries)
+    provider_backoff_factor = provider_config.get("backoff_factor", backoff_factor)
+    
     return LLMClient(
         api_key=provider_config.get("api_key"),
         model_id=provider_config.get("model"),
         base_url=provider_config.get("base_url"),
-        provider=provider
+        request_timeout=provider_timeout,
+        provider=provider,
+        max_retries=provider_max_retries,
+        backoff_factor=provider_backoff_factor
     )
+
+
+def build_reranker(config: dict) -> Tuple[Optional[BaseReranker], Dict[str, Any]]:
+    """Instantiate a reranker based on configuration."""
+
+    rerank_config = config.get("rerank") or {}
+    provider = config.get("RERANK_PROVIDER") or rerank_config.get("provider")
+    if not provider:
+        return None, rerank_config
+
+    provider_key = provider.lower()
+
+    if provider_key in {"qwen", "qwen3", "qwen3-rerank"}:
+        provider_settings = (
+            (rerank_config.get("providers") or {}).get("qwen")
+            or rerank_config.get("qwen")
+            or {}
+        )
+        api_key = provider_settings.get("api_key")
+        if not api_key:
+            raise ValueError("DashScope API key is required for Qwen3 reranking.")
+
+        reranker = Qwen3Reranker(
+            api_key=api_key,
+            model=provider_settings.get("model", "qwen3-rerank"),
+            base_url=provider_settings.get("base_url"),
+            request_timeout=provider_settings.get("timeout", 15),
+        )
+        return reranker, rerank_config
+
+    raise ValueError(f"Unsupported rerank provider '{provider}'.")
 
 
 def main() -> None:
@@ -103,10 +154,26 @@ def main() -> None:
 
     llm_client = build_llm_client(config)
 
+    reranker: Optional[BaseReranker] = None
+    rerank_config: Dict[str, Any] = {}
+    if not args.disable_rerank:
+        reranker, rerank_config = build_reranker(config)
+    else:
+        rerank_config = config.get("rerank") or {}
+
+    min_rerank_score = float(rerank_config.get("min_score", 0.0))
+    max_per_domain = max(1, int(rerank_config.get("max_per_domain", 1)))
+
     if args.mode == "search":
         serpapi_api_key = config.get("SERPAPI_API_KEY")
         search_client = build_search_client(serpapi_api_key)
-        pipeline = NoRAGBaseline(llm_client=llm_client, search_client=search_client)
+        pipeline = NoRAGBaseline(
+            llm_client=llm_client,
+            search_client=search_client,
+            reranker=reranker,
+            min_rerank_score=min_rerank_score,
+            max_per_domain=max_per_domain,
+        )
         result = pipeline.answer(
             args.query,
             num_search_results=args.num_results,
@@ -128,6 +195,9 @@ def main() -> None:
             llm_client=llm_client,
             search_client=search_client,
             data_path=args.data_path,
+            reranker=reranker,
+            min_rerank_score=min_rerank_score,
+            max_per_domain=max_per_domain,
         )
         result = pipeline.answer(
             args.query,
