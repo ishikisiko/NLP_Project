@@ -10,6 +10,7 @@ from local_rag import LocalRAG
 from no_rag_baseline import NoRAGBaseline
 from rerank import BaseReranker
 from search import SearchClient
+from source_selector import IntelligentSourceSelector
 
 
 class SmartSearchOrchestrator:
@@ -47,6 +48,7 @@ class SmartSearchOrchestrator:
         self._search_pipeline: Optional[NoRAGBaseline] = None
         self._local_signature: Optional[tuple] = None
         self._hybrid_signature: Optional[tuple] = None
+        self.source_selector = IntelligentSourceSelector()
 
     def answer(
         self,
@@ -81,6 +83,10 @@ class SmartSearchOrchestrator:
                 search_allowed=False,
                 decision_reason="search_disabled",
             )
+        
+        # 在决策之前先进行领域分类
+        domain, sources = self.source_selector.select_sources(query)
+        enhanced_query = self.source_selector.generate_domain_specific_query(query, domain)
 
         decision = self._decide(query)
         decision_meta = {
@@ -171,6 +177,9 @@ class SmartSearchOrchestrator:
             "hybrid_mode": isinstance(pipeline, HybridRAG),
             "local_docs_present": has_docs,
             "search_allowed": True,
+            "domain": domain,
+            "selected_sources": sources,
+            "enhanced_query": enhanced_query,
         }
 
         self._merge_control(result, control_payload)
