@@ -157,3 +157,21 @@ python main.py "your query here" \
 - `--num-results`: Number of search results to include
 - `--pretty`: Pretty print the JSON response
 - `--disable-rerank`: Skip reranking even if configured
+
+### Batch Testing Multiple Queries
+
+You can exercise the orchestrator against a list of simple queries stored in a UTF-8 text file (one per line) using the batch runner:
+
+```bash
+# queries.txt contains one query per line; blank lines or lines starting with # are ignored
+python batch_test.py --queries-file ./queries.txt --search on --pretty
+```
+
+Key flags:
+- `--config`: optional path to an alternate `config.json` (otherwise `NLP_CONFIG_PATH` or the project root config is used)
+- `--data-path`: directory for local RAG documents
+- `--provider`: temporarily override the LLM provider for this batch
+- `--disable-rerank`: force reranking off even if configured
+- `--pretty`: pretty-print the full JSON output per query (omit for concise answers)
+
+This is useful for quick regression checks before UI deployments or backend changes.

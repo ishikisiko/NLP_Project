@@ -561,6 +561,12 @@ class SmartSearchOrchestrator:
             "晚安",
             "再见",
             "拜拜",
+            "哈囉",
+            "謝謝",
+            "感謝",
+            "早安",
+            "再見",
+            "掰掰",
         }
 
         if lowered in english_small_talk or stripped in chinese_small_talk:
@@ -574,6 +580,10 @@ class SmartSearchOrchestrator:
             "拜拜",
             "谢谢",
             "感谢",
+            "哈囉",
+            "掰掰",
+            "謝謝",
+            "感謝",
             "hello",
             "hi",
             "bye",

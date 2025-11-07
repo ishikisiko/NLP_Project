@@ -8,15 +8,18 @@ class IntelligentSourceSelector:
         # 领域关键词映射
         self.domain_keywords = {
             "weather": [
-                "天气", "气温", "温度", "下雨", "下雪", "台风", "暴雨", 
+                "天气", "气温", "温度", "下雨", "下雪", "台风", "暴雨",
+                "天氣", "氣溫", "溫度", "颱風",
                 "weather", "temperature", "rain", "snow", "typhoon"
             ],
             "transportation": [
                 "交通", "公交", "地铁", "拥堵", "路况", "航班", "火车", "高铁",
+                "公車", "地鐵", "擁堵", "路況", "航班", "火車", "高鐵",
                 "traffic", "bus", "subway", "congestion", "flight", "train"
             ],
             "finance": [
                 "股票", "股价", "金融", "汇率", "投资", "基金", "黄金", "原油",
+                "股價", "匯率", "投資", "基金", "黃金", "原油",
                 "stock", "finance", "exchange rate", "investment", "fund"
             ],
             "general": []  # 通用领域，无特定关键词
@@ -125,6 +128,28 @@ class IntelligentSourceSelector:
             print(f"   - {source['name']}: {source['url']}")
         
         return domain, sources
+
+    def generate_domain_specific_query(self, query: str, domain: str) -> str:
+        """根据识别出的领域为查询补充上下文关键词"""
+        cleaned_query = query.strip()
+        domain = (domain or "general").lower()
+
+        if not cleaned_query or domain == "general":
+            return cleaned_query
+
+        domain_context = {
+            "weather": "current weather forecast humidity wind speed",
+            "transportation": "live traffic status transit delays road conditions",
+            "finance": "latest market data stock price trend analysis",
+        }
+
+        supplemental_keywords = " ".join(self.domain_keywords.get(domain, [])[:3])
+        enhanced_query = " ".join(
+            part for part in [cleaned_query, domain_context.get(domain, ""), supplemental_keywords] if part
+        )
+
+        print(f"🧠 领域增强查询: {enhanced_query}")
+        return enhanced_query
     
     def get_source_details(self, domain: str) -> List[Dict[str, Any]]:
         """获取指定领域的详细数据源信息"""
