@@ -496,40 +496,52 @@ class SmartSearchOrchestrator:
             target["control"] = payload
 
     def _decide(self, query: str) -> Dict[str, Any]:
-        response = self.llm_client.chat(
-            system_prompt=self.DECISION_SYSTEM_PROMPT,
-            user_prompt=self._decision_prompt(query),
-            max_tokens=400,
-            temperature=0.0,
-        )
+        try:
+            response = self.llm_client.chat(
+                system_prompt=self.DECISION_SYSTEM_PROMPT,
+                user_prompt=self._decision_prompt(query),
+                max_tokens=400,
+                temperature=0.0,
+            )
 
-        content = response.get("content") or ""
-        payload = {
-            "needs_search": True,
-            "reason": None,
-            "direct_answer": None,
-            "raw_text": content,
-            "llm_raw": response.get("raw"),
-            "llm_warning": response.get("warning"),
-            "llm_error": response.get("error"),
-        }
+            content = response.get("content") or ""
+            payload = {
+                "needs_search": True,
+                "reason": None,
+                "direct_answer": None,
+                "raw_text": str(content)[:100] if content else None,  # 限制长度并转换为字符串
+                "llm_raw": response.get("raw"),
+                "llm_warning": response.get("warning"),
+                "llm_error": response.get("error"),
+            }
 
-        if response.get("error"):
-            payload["reason"] = "decision_llm_error"
+            if response.get("error"):
+                payload["reason"] = "decision_llm_error"
+                return payload
+
+            parsed = self._extract_json_object(content)
+            if not parsed:
+                payload["reason"] = "decision_parse_error"
+                return payload
+
+            needs_search = self._coerce_bool(parsed.get("needs_search"))
+            payload["needs_search"] = needs_search
+            payload["reason"] = str(parsed.get("reason") or payload["reason"])[:100] if payload["reason"] else None
+            direct_answer = parsed.get("answer") if not needs_search else None
+            if direct_answer:
+                payload["direct_answer"] = str(direct_answer).strip()[:1000]  # 限制长度
             return payload
-
-        parsed = self._extract_json_object(content)
-        if not parsed:
-            payload["reason"] = "decision_parse_error"
-            return payload
-
-        needs_search = self._coerce_bool(parsed.get("needs_search"))
-        payload["needs_search"] = needs_search
-        payload["reason"] = parsed.get("reason") or payload["reason"]
-        direct_answer = parsed.get("answer") if not needs_search else None
-        if direct_answer:
-            payload["direct_answer"] = str(direct_answer).strip()
-        return payload
+            
+        except Exception as e:
+            return {
+                "needs_search": True,
+                "reason": f"Error in _decide: {str(e)[:100]}",
+                "direct_answer": None,
+                "raw_text": None,
+                "llm_raw": None,
+                "llm_warning": None,
+                "llm_error": str(e),
+            }
 
     @staticmethod
     def _looks_like_small_talk(query: str) -> bool:
@@ -595,44 +607,53 @@ class SmartSearchOrchestrator:
         return False
 
     def _generate_keywords(self, query: str) -> Dict[str, Any]:
-        response = self.llm_client.chat(
-            system_prompt=self.KEYWORD_SYSTEM_PROMPT,
-            user_prompt=self._keyword_prompt(query),
-            max_tokens=300,
-            temperature=0.2,
-        )
+        try:
+            response = self.llm_client.chat(
+                system_prompt=self.KEYWORD_SYSTEM_PROMPT,
+                user_prompt=self._keyword_prompt(query),
+                max_tokens=300,
+                temperature=0.2,
+            )
 
-        content = response.get("content") or ""
-        payload: Dict[str, Any] = {
-            "keywords": [],
-            "raw_text": content,
-            "llm_warning": response.get("warning"),
-            "llm_error": response.get("error"),
-        }
+            content = response.get("content") or ""
+            payload: Dict[str, Any] = {
+                "keywords": [],
+                "raw_text": str(content)[:200] if content else None,  # 限制长度
+                "llm_warning": response.get("warning"),
+                "llm_error": response.get("error"),
+            }
 
-        if response.get("error"):
+            if response.get("error"):
+                return payload
+
+            parsed = self._extract_json_object(content)
+            if not parsed:
+                return payload
+
+            keywords: List[str] = []
+            raw_keywords = parsed.get("keywords")
+
+            if isinstance(raw_keywords, list):
+                for item in raw_keywords:
+                    if isinstance(item, str):
+                        cleaned = item.strip()
+                        if cleaned:
+                            keywords.append(str(cleaned)[:50])  # 限制每个关键词长度
+            elif isinstance(raw_keywords, str):
+                cleaned = raw_keywords.strip()
+                if cleaned:
+                    keywords.extend([str(part.strip())[:50] for part in cleaned.split(";") if part.strip()])
+
+            payload["keywords"] = [str(k)[:50] for k in keywords[:10]]  # 限制总数和长度
             return payload
-
-        parsed = self._extract_json_object(content)
-        if not parsed:
-            return payload
-
-        keywords: List[str] = []
-        raw_keywords = parsed.get("keywords")
-
-        if isinstance(raw_keywords, list):
-            for item in raw_keywords:
-                if isinstance(item, str):
-                    cleaned = item.strip()
-                    if cleaned:
-                        keywords.append(cleaned)
-        elif isinstance(raw_keywords, str):
-            cleaned = raw_keywords.strip()
-            if cleaned:
-                keywords.extend([part.strip() for part in cleaned.split(";") if part.strip()])
-
-        payload["keywords"] = keywords
-        return payload
+            
+        except Exception as e:
+            return {
+                "keywords": [],
+                "raw_text": None,
+                "llm_warning": None,
+                "llm_error": f"Error in _generate_keywords: {str(e)[:100]}",
+            }
 
     @staticmethod
     def _extract_json_object(text: str) -> Optional[Dict[str, Any]]:

@@ -121,11 +121,15 @@ class IntelligentSourceSelector:
             }
         ])
         
-        print(f"🔍 查询: '{query}'")
-        print(f"🎯 识别领域: {domain}")
-        print(f"📡 选择数据源:")
-        for source in sources:
-            print(f"   - {source['name']}: {source['url']}")
+        try:
+            print(f"🔍 查询: '{query}'")
+            print(f"🎯 识别领域: {domain}")
+            print(f"📡 选择数据源:")
+            for source in sources:
+                print(f"   - {source['name']}: {source['url']}")
+        except (UnicodeEncodeError, UnicodeDecodeError):
+            # 在不支持UTF-8的环境中静默跳过打印
+            pass
         
         return domain, sources
 
@@ -148,7 +152,11 @@ class IntelligentSourceSelector:
             part for part in [cleaned_query, domain_context.get(domain, ""), supplemental_keywords] if part
         )
 
-        print(f"🧠 领域增强查询: {enhanced_query}")
+        try:
+            print(f"🧠 领域增强查询: {enhanced_query}")
+        except (UnicodeEncodeError, UnicodeDecodeError):
+            # 在不支持UTF-8的环境中静默跳过打印
+            pass
         return enhanced_query
     
     def get_source_details(self, domain: str) -> List[Dict[str, Any]]:
@@ -169,9 +177,13 @@ def test_basic_functionality():
     print("✅ 基础功能验证测试")
     print("=" * 40)
     
-    for query in test_cases:
-        domain, sources = selector.select_sources(query)
-        print(f"📝 '{query}' -> 领域: {domain}, 数据源数: {len(sources)}")
+    try:
+        for query in test_cases:
+            domain, sources = selector.select_sources(query)
+            print(f"📝 '{query}' -> 领域: {domain}, 数据源数: {len(sources)}")
+    except (UnicodeEncodeError, UnicodeDecodeError):
+        # 在不支持UTF-8的环境中静默跳过打印
+        pass
     
     print("\n🎉 基础测试完成！")
 

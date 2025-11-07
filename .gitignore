@@ -1,6 +1,8 @@
 # Configuration files with sensitive data
 config.json
-
+.claude/
+uploads/*
+results/*
 # Python
 __pycache__/
 *.py[cod]

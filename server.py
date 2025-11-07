@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import copy
 import json
 import os
 from functools import lru_cache
@@ -40,12 +41,84 @@ def load_base_config() -> Dict[str, Any]:
         return json.load(config_file)
 
 
-def build_pipeline(provider_override: Optional[str] = None) -> SmartSearchOrchestrator:
+def build_pipeline(model_override: Optional[str] = None) -> SmartSearchOrchestrator:
     """Create a pipeline configured for the current request."""
 
-    config = load_base_config().copy()
-    if provider_override:
-        config["LLM_PROVIDER"] = provider_override
+    # Deep copy to avoid mutating cached configuration between requests
+    config = copy.deepcopy(load_base_config())
+    providers_cfg = config.get("providers", {})
+
+    def provider_has_valid_key(name: str) -> bool:
+        cfg = providers_cfg.get(name) or {}
+        key = (cfg.get("api_key") or "").strip()
+        if not key:
+            return False
+        upper_key = key.upper()
+        return not any(token in upper_key for token in ("YOUR_", "REPLACE", "TODO"))
+
+    def match_provider_by_model(model_id: str) -> Optional[str]:
+        return next(
+            (name for name, cfg in providers_cfg.items() if cfg.get("model") == model_id),
+            None,
+        )
+
+    def resolve_default_provider() -> str:
+        configured = config.get("LLM_PROVIDER")
+        if configured:
+            if configured in providers_cfg and provider_has_valid_key(configured):
+                return configured
+            matched = match_provider_by_model(configured)
+            if matched and provider_has_valid_key(matched):
+                if matched in providers_cfg and not providers_cfg[matched].get("model"):
+                    providers_cfg[matched]["model"] = configured
+                return matched
+
+        preferred_order = [
+            "glm",
+            "openai",
+            "anthropic",
+            "google",
+            "minimax",
+            "hkgai",
+            "openrouter",
+        ]
+        for candidate in preferred_order:
+            if candidate in providers_cfg and provider_has_valid_key(candidate):
+                return candidate
+
+        if configured and configured in providers_cfg:
+            return configured
+
+        return next(iter(providers_cfg.keys()), "glm")
+
+    config["LLM_PROVIDER"] = resolve_default_provider()
+    if model_override:
+        # Check if it's a model path (contains '/') and convert to provider
+        if "/" in model_override:
+            # Map specific models to providers
+            model_to_provider = {
+                "minimax/minimax-m2:free": "openrouter",
+                "deepseek/deepseek-r1-0528:free": "openrouter",
+            }
+            
+            if model_override in model_to_provider:
+                config["LLM_PROVIDER"] = model_to_provider[model_override]
+            else:
+                # For models like "openai/gpt-3.5-turbo", extract provider
+                config["LLM_PROVIDER"] = model_override.split("/")[0]
+        else:
+            if model_override in providers_cfg:
+                # Direct provider selection (e.g., "glm")
+                config["LLM_PROVIDER"] = model_override
+            else:
+                matched_provider = match_provider_by_model(model_override)
+                if matched_provider:
+                    config["LLM_PROVIDER"] = matched_provider
+                    if matched_provider in providers_cfg:
+                        providers_cfg[matched_provider]["model"] = model_override
+                else:
+                    # Fall back to treating the override as provider name
+                    config["LLM_PROVIDER"] = model_override
 
     # Build LLM client with enhanced error handling
     try:
@@ -90,6 +163,39 @@ def index() -> Any:
     return app.send_static_file("index.html")
 
 
+@app.route("/api/models")
+def get_available_models():
+    """Get list of available models from configuration."""
+    try:
+        config = load_base_config()
+        models = []
+        
+        # Get all models from providers
+        for provider_name, provider_config in config.get("providers", {}).items():
+            model = provider_config.get("model")
+            if model:
+                models.append({
+                    "id": model,
+                    "provider": provider_name,
+                    "display_name": f"{provider_name.upper()} - {model}"
+                })
+        
+        # Add available models from openrouter if configured
+        openrouter_config = config.get("providers", {}).get("openrouter", {})
+        if openrouter_config and openrouter_config.get("available_models"):
+            for model in openrouter_config.get("available_models", []):
+                if not any(m["id"] == model for m in models):
+                    models.append({
+                        "id": model,
+                        "provider": "openrouter",
+                        "display_name": f"OpenRouter - {model}"
+                    })
+        
+        return jsonify({"models": models})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
 @app.route('/api/files', methods=['GET'])
 def list_files():
     files = os.listdir(app.config['UPLOAD_FOLDER'])
@@ -127,7 +233,9 @@ def answer() -> Any:
         return jsonify({"error": "Missing 'query' in request body."}), 400
 
     try:
-        pipeline = build_pipeline(payload.get("provider") or None)
+        # Support both provider and model parameters for backward compatibility
+        model = payload.get("model") or payload.get("provider")
+        pipeline = build_pipeline(model_override=model)
     except ConfigurationError as exc:
         return jsonify({"error": str(exc)}), 500
     except Exception as exc:  # pragma: no cover - defensive fallback
@@ -152,10 +260,12 @@ def answer() -> Any:
             allow_search=allow_search,
         )
     except Exception as exc:  # pragma: no cover - propagate runtime issues
-        return jsonify({"error": f"Pipeline execution failed: {exc}"}), 500
+        error_msg = str(exc).encode('utf-8', errors='replace').decode('utf-8')
+        return jsonify({"error": f"Pipeline execution failed: {error_msg}"}), 500
 
     return jsonify(result)
 
 
 if __name__ == "__main__":
+    app.config['JSON_AS_ASCII'] = False  # 允许UTF-8字符
     app.run(host="0.0.0.0", port=int(os.environ.get("PORT", "8000")), debug=False)

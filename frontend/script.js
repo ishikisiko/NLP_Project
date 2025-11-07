@@ -11,7 +11,7 @@ document.addEventListener("DOMContentLoaded", () => {
     const chatLog = document.getElementById("chat-log");
     const form = document.getElementById("query-form");
     const textarea = document.getElementById("query");
-    const providerSelect = document.getElementById("provider");
+    const modelSelect = document.getElementById("model");
     const searchToggle = document.getElementById("search-toggle");
     const statusMessage = document.getElementById("status-message");
     const sendButton = form.querySelector(".send-btn");
@@ -22,6 +22,136 @@ document.addEventListener("DOMContentLoaded", () => {
     const state = {
         loading: false,
     };
+
+    async function loadAvailableModels() {
+        // Provider display names and sort order
+        const providerMeta = {
+            glm: { label: "GLM", order: 1 },
+            openai: { label: "OpenAI", order: 2 },
+            anthropic: { label: "Anthropic", order: 3 },
+            google: { label: "Google", order: 4 },
+            minimax: { label: "Minimax", order: 5 },
+            hkgai: { label: "HKGAI", order: 6 },
+            openrouter: { label: "OpenRouter", order: 7 },
+        };
+
+        function normalizeProvider(name) {
+            const key = (name || "").toString().trim().toLowerCase();
+            return providerMeta[key] ? key : (key || "openrouter");
+        }
+
+        function buildLabel(providerKey, id) {
+            const meta = providerMeta[providerKey] || { label: providerKey };
+            return `${meta.label} — ${id}`;
+        }
+
+        try {
+            const response = await fetch("/api/models");
+            if (!response.ok) throw new Error("Failed to fetch models");
+
+            const data = await response.json();
+            const rawModels = Array.isArray(data.models) ? data.models : [];
+
+            // Deduplicate by id, prefer non-OpenRouter provider when duplicates occur
+            const byId = new Map();
+            for (const m of rawModels) {
+                const id = (m && m.id) ? String(m.id) : null;
+                if (!id) continue;
+                const providerKey = normalizeProvider(m.provider);
+                const existing = byId.get(id);
+                if (!existing) {
+                    byId.set(id, { id, provider: providerKey });
+                } else {
+                    // Prefer non-openrouter over openrouter for the same id
+                    if (existing.provider === "openrouter" && providerKey !== "openrouter") {
+                        byId.set(id, { id, provider: providerKey });
+                    }
+                }
+            }
+
+            // Group by provider and sort
+            const groups = new Map();
+            for (const { id, provider } of byId.values()) {
+                if (!groups.has(provider)) groups.set(provider, []);
+                groups.get(provider).push({ id, label: buildLabel(provider, id) });
+            }
+
+            // Clear existing options and build optgroups
+            modelSelect.innerHTML = "";
+            const defaultOption = document.createElement("option");
+            defaultOption.value = "";
+            defaultOption.textContent = "默认模型 (glm-4.6)";
+            modelSelect.appendChild(defaultOption);
+
+            // Sort providers by defined order, then alphabetical fallback
+            const sortedProviders = Array.from(groups.keys()).sort((a, b) => {
+                const oa = providerMeta[a]?.order ?? 99;
+                const ob = providerMeta[b]?.order ?? 99;
+                if (oa !== ob) return oa - ob;
+                return (providerMeta[a]?.label || a).localeCompare(providerMeta[b]?.label || b, "zh-Hans-CN");
+            });
+
+            for (const p of sortedProviders) {
+                const optgroup = document.createElement("optgroup");
+                optgroup.label = providerMeta[p]?.label || p;
+                const items = groups.get(p).sort((x, y) => x.label.localeCompare(y.label, "zh-Hans-CN"));
+                for (const item of items) {
+                    const option = document.createElement("option");
+                    option.value = item.id;
+                    option.textContent = item.label;
+                    optgroup.appendChild(option);
+                }
+                modelSelect.appendChild(optgroup);
+            }
+
+            console.log(`Loaded ${byId.size} unique models across ${sortedProviders.length} providers`);
+        } catch (error) {
+            console.error("Failed to load models:", error);
+            // Fallback: minimal, already grouped suggestions
+            modelSelect.innerHTML = "";
+            const defaultOption = document.createElement("option");
+            defaultOption.value = "";
+            defaultOption.textContent = "默认模型 (glm-4.6)";
+            modelSelect.appendChild(defaultOption);
+
+            const fallback = {
+                GLM: [
+                    { id: "glm", label: "GLM — glm-4.6 (provider default)" },
+                ],
+                OpenRouter: [
+                    { id: "minimax/minimax-m2:free", label: "OpenRouter — minimax/minimax-m2:free" },
+                    { id: "deepseek/deepseek-r1-0528:free", label: "OpenRouter — deepseek/deepseek-r1-0528:free" },
+                ],
+                OpenAI: [
+                    { id: "openai", label: "OpenAI — gpt-3.5-turbo (provider default)" },
+                ],
+                Anthropic: [
+                    { id: "anthropic", label: "Anthropic — Claude (provider default)" },
+                ],
+                Google: [
+                    { id: "google", label: "Google — gemini-pro (provider default)" },
+                ],
+                Minimax: [
+                    { id: "minimax", label: "Minimax — minimax-m2:free (provider default)" },
+                ],
+                HKGAI: [
+                    { id: "hkgai", label: "HKGAI — HKGAI-V1 (provider default)" },
+                ],
+            };
+
+            for (const groupName of ["GLM", "OpenAI", "Anthropic", "Google", "Minimax", "HKGAI", "OpenRouter"]) {
+                const optgroup = document.createElement("optgroup");
+                optgroup.label = groupName;
+                for (const item of fallback[groupName]) {
+                    const option = document.createElement("option");
+                    option.value = item.id;
+                    option.textContent = item.label;
+                    optgroup.appendChild(option);
+                }
+                modelSelect.appendChild(optgroup);
+            }
+        }
+    }
 
     function ensurePlaceholder() {
         if (chatLog.children.length > 0) return;
@@ -64,6 +194,61 @@ document.addEventListener("DOMContentLoaded", () => {
         scrollToBottom();
 
         return message;
+    }
+
+    // --- Minimal Markdown rendering (safe subset) ---
+    function escapeHTML(str) {
+        return (str || "")
+            .replace(/&/g, "&amp;")
+            .replace(/</g, "&lt;")
+            .replace(/>/g, "&gt;");
+    }
+
+    function renderMarkdown(md) {
+        if (!md) return "";
+        let src = String(md);
+
+        // Handle fenced code blocks first: ```code```
+        src = src.replace(/```([\s\S]*?)```/g, (m, code) => {
+            const safe = escapeHTML(code);
+            return `<pre class="code"><code>${safe}</code></pre>`;
+        });
+
+        // Escape remaining HTML to avoid XSS
+        src = escapeHTML(src);
+
+        // Inline code
+        src = src.replace(/`([^`]+)`/g, (m, code) => `<code>${code}</code>`);
+        // Bold and italic (basic)
+        src = src.replace(/\*\*([^*]+)\*\*/g, (m, t) => `<strong>${t}</strong>`);
+        src = src.replace(/(^|\s)\*([^*]+)\*(?=\s|$)/g, (m, pre, t) => `${pre}<em>${t}</em>`);
+        // Links [text](http|https url)
+        src = src.replace(/\[([^\]]+)\]\(((?:https?:\/\/)[^\s)]+)\)/g, (m, text, url) =>
+            `<a href="${url}" target="_blank" rel="noopener noreferrer">${text}</a>`
+        );
+
+        // Headings (#, ##, ###) – keep small visuals using h3
+        src = src.replace(/^###\s+(.+)$/gm, (m, t) => `<h3>${t}</h3>`);
+        src = src.replace(/^##\s+(.+)$/gm, (m, t) => `<h3>${t}</h3>`);
+        src = src.replace(/^#\s+(.+)$/gm, (m, t) => `<h3>${t}</h3>`);
+
+        // Unordered list: lines starting with - or *
+        src = src.replace(/^(?:\s*[-*]\s.+(?:\n|$))+?/gm, (block) => {
+            const items = block.trim().split(/\n/).map(l => l.replace(/^\s*[-*]\s+/, "").trim());
+            const lis = items.map(it => `<li>${it}</li>`).join("");
+            return `<ul>${lis}</ul>`;
+        });
+
+        // Paragraphs: split by two or more newlines
+        const parts = src.split(/\n{2,}/).map(p => {
+            // If already a block element, return as is
+            if (/^\s*<(?:h3|ul|pre)/.test(p)) return p;
+            // Single newlines -> <br>
+            const withBr = p.replace(/\n/g, "<br>");
+            return `<p>${withBr}</p>`;
+        });
+
+        return parts.join("");
     }
 
     function createBadge(text) {
@@ -219,7 +404,8 @@ document.addEventListener("DOMContentLoaded", () => {
     function setAssistantMessage(messageEl, data) {
         messageEl.classList.remove("pending");
         const bubble = messageEl.querySelector(".bubble");
-        bubble.textContent = (data.answer || "未能生成答案").trim();
+        const answer = (data.answer || "未能生成答案").trim();
+        bubble.innerHTML = renderMarkdown(answer);
 
         const existingExtras = messageEl.querySelectorAll(".message-extras");
         existingExtras.forEach(node => node.remove());
@@ -297,8 +483,8 @@ document.addEventListener("DOMContentLoaded", () => {
             query,
             search: searchToggle.checked ? "on" : "off",
         };
-        if (providerSelect.value) {
-            payload.provider = providerSelect.value;
+        if (modelSelect.value) {
+            payload.model = modelSelect.value;
         }
 
         try {
@@ -431,5 +617,6 @@ document.addEventListener("DOMContentLoaded", () => {
 
     ensurePlaceholder();
     fetchFiles();
+    loadAvailableModels();
     autoResize();
 });

@@ -53,7 +53,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--provider",
         type=str,
-        help="Override the LLM provider (openai, anthropic, google, glm, hkgai).",
+        help="Override the LLM provider or model (openai, anthropic, google, glm, hkgai, openrouter, minimax, or specific model like minimax/minimax-m2:free).",
+    )
+    parser.add_argument(
+        "--model",
+        type=str,
+        help="Override the LLM model (e.g., minimax/minimax-m2:free, deepseek/deepseek-r1-0528:free).",
     )
     parser.add_argument(
         "--disable-rerank",
@@ -70,11 +75,36 @@ def parse_args() -> argparse.Namespace:
 
 
 def build_llm_client(config: dict) -> LLMClient:
-    """Build LLM client based on provider configuration."""
-    provider = config.get("LLM_PROVIDER", "glm")
+    """Build LLM client based on provider or model configuration."""
+    provider_or_model = config.get("LLM_PROVIDER", "glm")
+    
+    # Check if it's a specific model (contains '/') and map to provider
+    if "/" in provider_or_model:
+        # Map models to providers
+        model_to_provider = {
+            "minimax/minimax-m2:free": "openrouter",
+            "deepseek/deepseek-r1-0528:free": "openrouter",
+        }
+        
+        if provider_or_model in model_to_provider:
+            provider = model_to_provider[provider_or_model]
+        else:
+            # For models like "openai/gpt-3.5-turbo", extract the provider
+            provider = provider_or_model.split("/")[0]
+            if provider not in ["openai", "anthropic", "google", "glm", "hkgai", "openrouter", "minimax"]:
+                # Check if it's a direct provider name
+                supported_providers = ["openai", "anthropic", "google", "glm", "hkgai", "openrouter", "minimax"]
+                if provider not in supported_providers:
+                    # If not a known provider, treat as provider name
+                    provider = provider_or_model
+        model_id = provider_or_model
+    else:
+        # It's a provider name
+        provider = provider_or_model
+        model_id = None
     
     # Validate provider
-    supported_providers = ["openai", "anthropic", "google", "glm", "hkgai"]
+    supported_providers = ["openai", "anthropic", "google", "glm", "hkgai", "openrouter", "minimax"]
     if provider not in supported_providers:
         raise ValueError(f"Unsupported provider '{provider}'. Supported providers: {', '.join(supported_providers)}")
     
@@ -85,6 +115,21 @@ def build_llm_client(config: dict) -> LLMClient:
     provider_config = config.get("providers", {}).get(provider, {})
     if not provider_config:
         raise ValueError(f"Provider '{provider}' not found in configuration")
+    
+    # Get the model ID (use specified model or fall back to provider config)
+    final_model_id = model_id or provider_config.get("model")
+    if not final_model_id:
+        raise ValueError(f"No model specified for provider '{provider}'")
+    
+    # For openrouter, check if model is in available models
+    if provider == "openrouter" and "/" in provider_or_model:
+        # Update the provider config with the specific model
+        provider_config = provider_config.copy()
+        provider_config["model"] = final_model_id
+    elif "/" not in provider_or_model and model_id:
+        # For other providers, use the specified model if provided
+        provider_config = provider_config.copy()
+        provider_config["model"] = model_id
     
     # Get global LLM settings
     llm_settings = config.get("llm_settings", {})
@@ -99,7 +144,7 @@ def build_llm_client(config: dict) -> LLMClient:
     
     return LLMClient(
         api_key=provider_config.get("api_key"),
-        model_id=provider_config.get("model"),
+        model_id=final_model_id,
         base_url=provider_config.get("base_url"),
         request_timeout=provider_timeout,
         provider=provider,
@@ -145,8 +190,10 @@ def main() -> None:
     with open("config.json", "r") as f:
         config = json.load(f)
 
-    # Override provider if specified via command line
-    if args.provider:
+    # Override provider or model if specified via command line
+    if args.model:
+        config["LLM_PROVIDER"] = args.model
+    elif args.provider:
         config["LLM_PROVIDER"] = args.provider
 
     llm_client = build_llm_client(config)

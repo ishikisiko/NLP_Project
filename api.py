@@ -47,6 +47,13 @@ class LLMClient:
             self.headers["Authorization"] = f"Bearer {self.api_key}"
         elif provider == "glm":
             self.headers["Authorization"] = f"Bearer {self.api_key}"
+        elif provider == "openrouter":
+            self.headers["Authorization"] = f"Bearer {self.api_key}"
+            self.headers["HTTP-Referer"] = "https://your-site.com"
+            # OpenRouter requires ASCII-safe header values; keep title simple to avoid encoding issues
+            self.headers["X-Title"] = "Intelligent QA Assistant"
+        elif provider == "minimax":
+            self.headers["Authorization"] = f"Bearer {self.api_key}"
         else:
             # Default to Bearer token
             self.headers["Authorization"] = f"Bearer {self.api_key}"
@@ -110,10 +117,15 @@ class LLMClient:
                     error_msg = f"连接被远程服务器断开: {str(exc)}"
                 else:
                     error_msg = f"网络连接错误: {str(exc)}"
+                error_msg = error_msg.encode('utf-8', errors='replace').decode('utf-8')
+                error_msg = error_msg.encode('utf-8', errors='replace').decode('utf-8')
                     
                 if attempt < self.max_retries:
                     wait_time = self.backoff_factor * (2 ** attempt)
-                    print(f"网络连接失败，{wait_time}秒后重试 (尝试 {attempt + 1}/{self.max_retries + 1}): {error_msg}")
+                    try:
+                        print(f"网络连接失败，{wait_time}秒后重试 (尝试 {attempt + 1}/{self.max_retries + 1}): {error_msg}")
+                    except (UnicodeEncodeError, UnicodeDecodeError):
+                        pass
                     time.sleep(wait_time)
                 else:
                     return {"error": f"经过 {self.max_retries + 1} 次重试后仍然失败: {error_msg}"}
@@ -121,10 +133,14 @@ class LLMClient:
             except Timeout as exc:
                 last_error = exc
                 error_msg = f"请求超时 ({self.request_timeout}秒): {str(exc)}"
+                error_msg = error_msg.encode('utf-8', errors='replace').decode('utf-8')
                 
                 if attempt < self.max_retries:
                     wait_time = self.backoff_factor * (2 ** attempt)
-                    print(f"请求超时，{wait_time}秒后重试 (尝试 {attempt + 1}/{self.max_retries + 1})")
+                    try:
+                        print(f"请求超时，{wait_time}秒后重试 (尝试 {attempt + 1}/{self.max_retries + 1})")
+                    except (UnicodeEncodeError, UnicodeDecodeError):
+                        pass
                     time.sleep(wait_time)
                 else:
                     return {"error": f"经过 {self.max_retries + 1} 次重试后仍然超时: {error_msg}"}
@@ -132,10 +148,14 @@ class LLMClient:
             except RequestException as exc:
                 last_error = exc
                 error_msg = f"请求错误: {str(exc)}"
+                error_msg = error_msg.encode('utf-8', errors='replace').decode('utf-8')
                 
                 if attempt < self.max_retries:
                     wait_time = self.backoff_factor * (2 ** attempt)
-                    print(f"请求失败，{wait_time}秒后重试 (尝试 {attempt + 1}/{self.max_retries + 1}): {error_msg}")
+                    try:
+                        print(f"请求失败，{wait_time}秒后重试 (尝试 {attempt + 1}/{self.max_retries + 1}): {error_msg}")
+                    except (UnicodeEncodeError, UnicodeDecodeError):
+                        pass
                     time.sleep(wait_time)
                 else:
                     return {"error": f"经过 {self.max_retries + 1} 次重试后仍然失败: {error_msg}"}
@@ -145,7 +165,26 @@ class LLMClient:
         try:
             data = response.json()
         except json.JSONDecodeError as exc:
-            return {"error": f"响应JSON解析失败: {str(exc)}"}
+            return {"error": f"响应JSON解析失败: {str(exc)}".encode('utf-8', errors='replace').decode('utf-8')}
+
+        def _coerce_content(value: Any) -> str:
+            if isinstance(value, str):
+                return value.strip()
+            if isinstance(value, list):
+                pieces = []
+                for item in value:
+                    if isinstance(item, str):
+                        pieces.append(item)
+                    elif isinstance(item, dict):
+                        text = item.get("text") or item.get("content")
+                        if isinstance(text, str):
+                            pieces.append(text)
+                return "\n".join(piece for piece in pieces if piece).strip()
+            if isinstance(value, dict):
+                text = value.get("text") or value.get("content")
+                if isinstance(text, str):
+                    return text.strip()
+            return ""
 
         content = ""
         try:
@@ -154,12 +193,35 @@ class LLMClient:
                 first = choices[0] if isinstance(choices[0], dict) else {}
                 # Chat schema
                 message = first.get("message") or {}
-                content = (message.get("content") or "").strip()
+                content = _coerce_content(message.get("content"))
                 # Fallback to text-based schema
                 if not content:
-                    content = (first.get("text") or "").strip()
+                    content = _coerce_content(first.get("text"))
+                # Provider specific handling when standard fields are absent
+                if not content:
+                    if self.provider == "minimax":
+                        # Minimax responses may return a messages array or output_text field
+                        messages = first.get("messages") or []
+                        for msg in reversed(messages):
+                            if isinstance(msg, dict) and msg.get("role") == "assistant":
+                                candidate = _coerce_content(msg.get("content"))
+                                if candidate:
+                                    content = candidate
+                                    break
+                        if not content:
+                            output_text = first.get("output_text") or data.get("output_text")
+                            content = _coerce_content(output_text)
+                    elif self.provider == "openrouter":
+                        # OpenRouter occasionally nests content inside a "delta" key
+                        delta = first.get("delta") or {}
+                        if isinstance(delta, dict):
+                            content = _coerce_content(delta.get("content"))
         except Exception as exc:
-            print(f"解析响应内容时出错: {exc}")
+            try:
+                print(f"解析响应内容时出错: {exc}")
+            except (UnicodeEncodeError, UnicodeDecodeError):
+                pass
+            return {"error": f"解析响应内容时出错: {str(exc)}".encode('utf-8', errors='replace').decode('utf-8')}
 
         if not content:
             finish_reason = None
@@ -194,4 +256,7 @@ if __name__ == "__main__":
     system_prompt = "You are a helpful AI assistant providing concise and accurate responses."
     user_prompt = "what is the capital of China?"
     result = client.chat(system_prompt, user_prompt)
-    print(json.dumps(result, indent=2))
+    try:
+        print(json.dumps(result, indent=2, ensure_ascii=False))
+    except (UnicodeEncodeError, UnicodeDecodeError):
+        print(json.dumps(result, indent=2, ensure_ascii=False).encode('utf-8', errors='replace').decode('utf-8'))
