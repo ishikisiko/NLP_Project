@@ -149,9 +149,17 @@ class LocalRAG:
             temperature=temperature,
         )
 
+        # Build answer with source references
+        answer = response.get("content")
+        if answer and retrieved_docs:
+            answer += "\n\n**本地文档来源：**\n"
+            for idx, doc in enumerate(retrieved_docs, start=1):
+                source = doc.source or f"文档 {idx}"
+                answer += f"{idx}. {source}\n"
+
         return {
             "query": query,
-            "answer": response.get("content"),
+            "answer": answer,
             "retrieved_docs": [asdict(doc) for doc in retrieved_docs],
             "llm_raw": response.get("raw"),
             "llm_warning": response.get("warning"),

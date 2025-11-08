@@ -183,10 +183,29 @@ def main() -> None:
     max_per_domain = max(1, int(rerank_config.get("max_per_domain", 1)))
 
     search_client = None
+    requested_sources: List[str] = []
+    active_sources: List[str] = []
+    active_labels: List[str] = []
+    missing_sources: List[str] = []
+    configured_sources: List[str] = []
+    if (config.get("SERPAPI_API_KEY") or "").strip():
+        configured_sources.append("serp")
+    you_cfg_batch = config.get("youSearch") or {}
+    if (you_cfg_batch.get("api_key") or config.get("YOU_API_KEY") or "").strip():
+        configured_sources.append("you")
+    mcp_cfg_batch = (config.get("mcpServers") or {}).get("web-search-prime") or {}
+    if (mcp_cfg_batch.get("url") or "").strip() and any(
+        (mcp_cfg_batch.get("headers") or {}).get(token) for token in ("Authorization", "authorization")
+    ):
+        configured_sources.append("mcp")
     if allow_search:
-        serp_key = config.get("SERPAPI_API_KEY")
-        if serp_key:
-            search_client = build_search_client(serp_key)
+        search_client = build_search_client(config)
+        if search_client:
+            requested_sources = list(getattr(search_client, "requested_sources", []))
+            active_sources = list(getattr(search_client, "active_sources", []))
+            active_labels = list(getattr(search_client, "active_source_labels", []))
+            missing_sources = list(getattr(search_client, "missing_requested_sources", []))
+            configured_sources = list(getattr(search_client, "configured_sources", []))
 
     orchestrator = SmartSearchOrchestrator(
         llm_client=llm_client,
@@ -195,6 +214,11 @@ def main() -> None:
         reranker=reranker,
         min_rerank_score=min_rerank_score,
         max_per_domain=max_per_domain,
+        requested_search_sources=requested_sources,
+        active_search_sources=active_sources,
+        active_search_source_labels=active_labels,
+        missing_search_sources=missing_sources,
+        configured_search_sources=configured_sources,
     )
 
     print(f"Loaded {len(queries)} queries from {args.queries_file}")
@@ -256,6 +280,13 @@ def main() -> None:
                 print(f"Decision reason: {decision}")
             if mode:
                 print(f"Mode: {mode}")
+            warnings = result.get("search_warnings")
+            if warnings:
+                if isinstance(warnings, list):
+                    for warning in warnings:
+                        print(f"Search warning: {warning}")
+                else:
+                    print(f"Search warning: {warnings}")
 
     # Save all results to single file if requested
     if output_to_file and args.single_file:

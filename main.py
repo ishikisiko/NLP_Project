@@ -1,21 +1,225 @@
 import argparse
 import json
-import os
-from typing import Optional, Tuple, Dict, Any
+from typing import Optional, Tuple, Dict, Any, List, Union, Set
 
 from api import LLMClient, HKGAIClient
-from search import SerpAPISearchClient
+from search import (
+    CombinedSearchClient,
+    GoogleSearchClient,
+    MCPWebSearchClient,
+    SearchClient,
+    SerpAPISearchClient,
+    YouSearchClient,
+)
 from rerank import BaseReranker, Qwen3Reranker
 from smart_orchestrator import SmartSearchOrchestrator
 
 
-def build_search_client(api_key: Optional[str]) -> SerpAPISearchClient:
-    if not api_key:
-        raise ValueError(
-            "SERPAPI_API_KEY environment variable is not set. "
-            "Provide a SerpAPI key to enable the search baseline."
+def build_search_client(
+    config_or_key: Union[Dict[str, Any], str, None],
+    *,
+    sources: Optional[List[str]] = None,
+) -> Optional[SearchClient]:
+    """Build a search client from config supporting SerpAPI, You.com, Google, and MCP sources."""
+
+    allowed_sources = {"serp", "you", "mcp", "google"}
+    requested_order: Optional[List[str]] = None
+    requested_lookup: Optional[Set[str]] = None
+    if sources is not None:
+        ordered: List[str] = []
+        seen: Set[str] = set()
+        for raw in sources:
+            if not isinstance(raw, str):
+                continue
+            token = raw.strip().lower()
+            if token not in allowed_sources or token in seen:
+                continue
+            seen.add(token)
+            ordered.append(token)
+        requested_order = ordered
+        requested_lookup = set(ordered)
+
+    def wants(source_id: str) -> bool:
+        if requested_lookup is None:
+            return True
+        return source_id in requested_lookup
+
+    def apply_metadata(
+        client: SearchClient,
+        *,
+        active: List[SearchClient],
+        configured: List[str],
+        requested: Optional[List[str]],
+        missing: List[str],
+    ) -> SearchClient:
+        active_ids = [getattr(instance, "source_id", type(instance).__name__.lower()) for instance in active]
+        active_labels = [getattr(instance, "display_name", type(instance).__name__) for instance in active]
+        requested_list = list(requested) if requested is not None else list(active_ids)
+        setattr(client, "active_sources", active_ids)
+        setattr(client, "active_source_labels", active_labels)
+        setattr(client, "requested_sources", requested_list)
+        setattr(client, "configured_sources", list(configured))
+        setattr(client, "missing_requested_sources", list(missing))
+        return client
+
+    if isinstance(config_or_key, str):
+        api_key = config_or_key.strip()
+        if not api_key:
+            raise ValueError("SerpAPI API key is required.")
+        if requested_lookup is not None and "serp" not in requested_lookup:
+            return None
+        client = SerpAPISearchClient(api_key=api_key)
+        return apply_metadata(
+            client,
+            active=[client],
+            configured=["serp"],
+            requested=requested_order,
+            missing=[],
         )
-    return SerpAPISearchClient(api_key=api_key)
+
+    if not isinstance(config_or_key, dict):
+        return None
+
+    clients: List[SearchClient] = []
+    configured_flags: Dict[str, bool] = {"serp": False, "you": False, "mcp": False, "google": False}
+    missing_requested: List[str] = []
+
+    serp_key = (config_or_key.get("SERPAPI_API_KEY") or "").strip()
+    if serp_key:
+        configured_flags["serp"] = True
+        if wants("serp"):
+            try:
+                clients.append(SerpAPISearchClient(api_key=serp_key))
+            except Exception as exc:
+                print(f"[search] SerpAPI disabled: {exc}")
+    elif requested_lookup is not None and "serp" in requested_lookup:
+        missing_requested.append("serp")
+
+    you_cfg = config_or_key.get("youSearch") or {}
+    you_key = (you_cfg.get("api_key") or config_or_key.get("YOU_API_KEY") or "").strip()
+    if you_key:
+        configured_flags["you"] = True
+        if wants("you"):
+            you_kwargs: Dict[str, Any] = {}
+            base_url = (you_cfg.get("base_url") or "").strip()
+            if base_url:
+                you_kwargs["base_url"] = base_url
+            timeout_raw = you_cfg.get("timeout")
+            if timeout_raw is not None:
+                try:
+                    you_kwargs["timeout"] = int(timeout_raw)
+                except (TypeError, ValueError):
+                    pass
+            country = (you_cfg.get("country") or "").strip()
+            if country:
+                you_kwargs["country"] = country
+            safesearch = (you_cfg.get("safesearch") or "").strip()
+            if safesearch:
+                you_kwargs["safesearch"] = safesearch
+            freshness = (you_cfg.get("freshness") or "").strip()
+            if freshness:
+                you_kwargs["freshness"] = freshness
+            include_news = you_cfg.get("include_news")
+            if include_news is not None:
+                you_kwargs["include_news"] = bool(include_news)
+            default_count = you_cfg.get("default_count")
+            if default_count is not None:
+                try:
+                    you_kwargs["default_count"] = int(default_count)
+                except (TypeError, ValueError):
+                    pass
+            extra_params = you_cfg.get("extra_params")
+            if isinstance(extra_params, dict):
+                you_kwargs["extra_params"] = extra_params
+
+            try:
+                clients.append(YouSearchClient(api_key=you_key, **you_kwargs))
+            except Exception as exc:
+                print(f"[search] You.com search disabled: {exc}")
+    elif requested_lookup is not None and "you" in requested_lookup:
+        missing_requested.append("you")
+
+    mcp_config = (config_or_key.get("mcpServers") or {}).get("web-search-prime") or {}
+    base_url = (mcp_config.get("url") or "").strip()
+    headers = mcp_config.get("headers") or {}
+    has_auth = any(headers.get(token) for token in ("Authorization", "authorization"))
+    if base_url and has_auth:
+        configured_flags["mcp"] = True
+        if wants("mcp"):
+            timeout_raw = mcp_config.get("timeout")
+            try:
+                timeout_value = int(timeout_raw) if timeout_raw is not None else 20
+            except (TypeError, ValueError):
+                timeout_value = 20
+            search_path = (mcp_config.get("search_path") or "").strip()
+            try:
+                clients.append(
+                    MCPWebSearchClient(
+                        base_url=base_url,
+                        headers=headers,
+                        timeout=timeout_value,
+                        search_path=search_path,
+                    )
+                )
+            except Exception as exc:
+                print(f"[search] MCP web-search-prime disabled: {exc}")
+    else:
+        if base_url and not has_auth:
+            print("[search] MCP web-search-prime missing Authorization header; skipping.")
+        if requested_lookup is not None and "mcp" in requested_lookup:
+            missing_requested.append("mcp")
+
+    # Google Custom Search JSON API
+    google_cfg = config_or_key.get("googleSearch") or {}
+    google_key = (google_cfg.get("api_key") or config_or_key.get("GOOGLE_API_KEY") or "").strip()
+    google_cx = (google_cfg.get("cx") or config_or_key.get("GOOGLE_CX") or "").strip()
+    if google_key and google_cx:
+        configured_flags["google"] = True
+        if wants("google"):
+            google_kwargs: Dict[str, Any] = {}
+            base_url = (google_cfg.get("base_url") or "").strip()
+            if base_url:
+                google_kwargs["base_url"] = base_url
+            timeout_raw = google_cfg.get("timeout")
+            if timeout_raw is not None:
+                try:
+                    google_kwargs["timeout"] = int(timeout_raw)
+                except (TypeError, ValueError):
+                    pass
+            gl = (google_cfg.get("gl") or "").strip()
+            if gl:
+                google_kwargs["gl"] = gl
+            lr = (google_cfg.get("lr") or "").strip()
+            if lr:
+                google_kwargs["lr"] = lr
+            safe = (google_cfg.get("safe") or "").strip()
+            if safe:
+                google_kwargs["safe"] = safe
+
+            try:
+                clients.append(GoogleSearchClient(api_key=google_key, cx=google_cx, **google_kwargs))
+            except Exception as exc:
+                print(f"[search] Google Search disabled: {exc}")
+    elif requested_lookup is not None and "google" in requested_lookup:
+        missing_requested.append("google")
+
+    configured = [source for source, flag in configured_flags.items() if flag]
+
+    if not clients:
+        return None
+
+    if len(clients) == 1:
+        client = clients[0]
+    else:
+        client = CombinedSearchClient(clients)
+
+    return apply_metadata(
+        client,
+        active=clients,
+        configured=configured,
+        requested=requested_order,
+        missing=missing_requested,
+    )
 
 
 def parse_args() -> argparse.Namespace:
@@ -208,11 +412,35 @@ def main() -> None:
     min_rerank_score = float(rerank_config.get("min_score", 0.0))
     max_per_domain = max(1, int(rerank_config.get("max_per_domain", 1)))
 
-    search_client: Optional[SerpAPISearchClient] = None
+    search_client: Optional[SearchClient] = None
+    requested_sources: List[str] = []
+    active_sources: List[str] = []
+    active_labels: List[str] = []
+    missing_sources: List[str] = []
+    configured_sources: List[str] = []
+    if (config.get("SERPAPI_API_KEY") or "").strip():
+        configured_sources.append("serp")
+    you_cfg_cli = config.get("youSearch") or {}
+    if (you_cfg_cli.get("api_key") or config.get("YOU_API_KEY") or "").strip():
+        configured_sources.append("you")
+    mcp_cfg_cli = (config.get("mcpServers") or {}).get("web-search-prime") or {}
+    if (mcp_cfg_cli.get("url") or "").strip() and any(
+        (mcp_cfg_cli.get("headers") or {}).get(token) for token in ("Authorization", "authorization")
+    ):
+        configured_sources.append("mcp")
+    google_cfg_cli = config.get("googleSearch") or {}
+    google_key_cli = (google_cfg_cli.get("api_key") or config.get("GOOGLE_API_KEY") or "").strip()
+    google_cx_cli = (google_cfg_cli.get("cx") or config.get("GOOGLE_CX") or "").strip()
+    if google_key_cli and google_cx_cli:
+        configured_sources.append("google")
     if allow_search:
-        serpapi_api_key = config.get("SERPAPI_API_KEY")
-        if serpapi_api_key:
-            search_client = build_search_client(serpapi_api_key)
+        search_client = build_search_client(config)
+        if search_client:
+            requested_sources = list(getattr(search_client, "requested_sources", []))
+            active_sources = list(getattr(search_client, "active_sources", []))
+            active_labels = list(getattr(search_client, "active_source_labels", []))
+            missing_sources = list(getattr(search_client, "missing_requested_sources", []))
+            configured_sources = list(getattr(search_client, "configured_sources", []))
 
     orchestrator = SmartSearchOrchestrator(
         llm_client=llm_client,
@@ -221,6 +449,11 @@ def main() -> None:
         reranker=reranker,
         min_rerank_score=min_rerank_score,
         max_per_domain=max_per_domain,
+        requested_search_sources=requested_sources,
+        active_search_sources=active_sources,
+        active_search_source_labels=active_labels,
+        missing_search_sources=missing_sources,
+        configured_search_sources=configured_sources,
     )
     
     result = orchestrator.answer(
@@ -234,7 +467,8 @@ def main() -> None:
 
     # Check if there are any errors or warnings
     has_error = result.get("llm_error") is not None
-    has_warning = result.get("llm_warning") is not None
+    search_warnings = result.get("search_warnings")
+    has_warning = (result.get("llm_warning") is not None) or bool(search_warnings)
     no_answer = result.get("answer") is None
 
     # If there are errors/warnings or no answer, output full JSON
@@ -242,7 +476,7 @@ def main() -> None:
         if args.pretty:
             print(json.dumps(result, indent=2, ensure_ascii=False))
         else:
-            print(json.dumps(result))
+            print(json.dumps(result, ensure_ascii=False))
     else:
         # Normal case: only output the answer
         print(result["answer"])

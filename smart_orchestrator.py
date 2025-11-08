@@ -26,6 +26,11 @@ class SmartSearchOrchestrator:
     DIRECT_ANSWER_SYSTEM_PROMPT = (
         "You are a knowledgeable assistant. Answer clearly based on your existing knowledge."
     )
+    SEARCH_SOURCE_LABELS = {
+        "serp": "SerpAPI",
+        "you": "You.com",
+        "mcp": "MCP",
+    }
 
     def __init__(
         self,
@@ -36,6 +41,11 @@ class SmartSearchOrchestrator:
         reranker: Optional[BaseReranker] = None,
         min_rerank_score: float = 0.0,
         max_per_domain: int = 1,
+        requested_search_sources: Optional[List[str]] = None,
+        active_search_sources: Optional[List[str]] = None,
+        active_search_source_labels: Optional[List[str]] = None,
+        missing_search_sources: Optional[List[str]] = None,
+        configured_search_sources: Optional[List[str]] = None,
     ) -> None:
         self.llm_client = llm_client
         self.search_client = search_client
@@ -49,39 +59,66 @@ class SmartSearchOrchestrator:
         self._local_signature: Optional[tuple] = None
         self._hybrid_signature: Optional[tuple] = None
         self.source_selector = IntelligentSourceSelector()
+        self.requested_search_sources = self._normalize_sources(requested_search_sources)
+        raw_active_sources = active_search_sources or getattr(search_client, "active_sources", [])
+        self.active_search_sources = self._normalize_sources(raw_active_sources)
+        raw_labels = active_search_source_labels or getattr(search_client, "active_source_labels", [])
+        self.active_search_source_labels = [str(label).strip() for label in raw_labels if str(label).strip()]
+        missing_sources = missing_search_sources or getattr(search_client, "missing_requested_sources", [])
+        self.missing_search_sources = self._normalize_sources(missing_sources)
+        configured_sources = configured_search_sources or getattr(search_client, "configured_sources", [])
+        self.configured_search_sources = self._normalize_sources(configured_sources)
 
     def answer(
         self,
         query: str,
         *,
-        num_search_results: int = 5,
+        num_search_results: int = 10,
+        per_source_search_results: Optional[int] = None,
         num_retrieved_docs: int = 5,
-        max_tokens: int = 5000,
+        max_tokens: int = 8000,
         temperature: float = 0.3,
         allow_search: bool = True,
     ) -> Dict[str, Any]:
+        try:
+            total_limit = max(1, int(num_search_results))
+        except (TypeError, ValueError):
+            total_limit = 10
+        try:
+            per_source_limit = (
+                max(1, int(per_source_search_results))
+                if per_source_search_results is not None
+                else total_limit
+            )
+        except (TypeError, ValueError):
+            per_source_limit = total_limit
+
         snapshot = self._snapshot_local_docs()
         has_docs = bool(snapshot)
 
         if self._looks_like_small_talk(query):
-            return self._respond_small_talk(
-                query=query,
-                max_tokens=max_tokens,
-                temperature=temperature,
-                allow_search=allow_search,
-                has_docs=has_docs,
+            return self._finalize(
+                self._respond_small_talk(
+                    query=query,
+                    max_tokens=max_tokens,
+                    temperature=temperature,
+                    allow_search=allow_search,
+                    has_docs=has_docs,
+                )
             )
 
         if not allow_search:
-            return self._answer_local_mode(
-                query=query,
-                snapshot=snapshot,
-                has_docs=has_docs,
-                num_retrieved_docs=num_retrieved_docs,
-                max_tokens=max_tokens,
-                temperature=temperature,
-                search_allowed=False,
-                decision_reason="search_disabled",
+            return self._finalize(
+                self._answer_local_mode(
+                    query=query,
+                    snapshot=snapshot,
+                    has_docs=has_docs,
+                    num_retrieved_docs=num_retrieved_docs,
+                    max_tokens=max_tokens,
+                    temperature=temperature,
+                    search_allowed=False,
+                    decision_reason="search_disabled",
+                )
             )
         
         # 在决策之前先进行领域分类
@@ -99,35 +136,41 @@ class SmartSearchOrchestrator:
         decision_raw = decision.get("llm_raw")
 
         if not decision_meta["needs_search"] and decision.get("direct_answer"):
-            return self._direct_answer_from_decision(
-                query=query,
-                answer=decision["direct_answer"],
-                decision_meta=decision_meta,
-                decision_raw=decision_raw,
-                has_docs=has_docs,
-                allow_search=True,
+            return self._finalize(
+                self._direct_answer_from_decision(
+                    query=query,
+                    answer=decision["direct_answer"],
+                    decision_meta=decision_meta,
+                    decision_raw=decision_raw,
+                    has_docs=has_docs,
+                    allow_search=True,
+                )
             )
 
         if not decision_meta["needs_search"]:
-            return self._direct_answer_via_llm(
-                query=query,
-                max_tokens=max_tokens,
-                temperature=temperature,
-                has_docs=has_docs,
-                allow_search=True,
-                reason="direct_llm_fallback",
-                decision_meta=decision_meta,
+            return self._finalize(
+                self._direct_answer_via_llm(
+                    query=query,
+                    max_tokens=max_tokens,
+                    temperature=temperature,
+                    has_docs=has_docs,
+                    allow_search=True,
+                    reason="direct_llm_fallback",
+                    decision_meta=decision_meta,
+                )
             )
 
         if not self.search_client:
-            return self._search_unavailable_response(
-                query=query,
-                snapshot=snapshot,
-                has_docs=has_docs,
-                decision_meta=decision_meta,
-                max_tokens=max_tokens,
-                temperature=temperature,
-                num_retrieved_docs=num_retrieved_docs,
+            return self._finalize(
+                self._search_unavailable_response(
+                    query=query,
+                    snapshot=snapshot,
+                    has_docs=has_docs,
+                    decision_meta=decision_meta,
+                    max_tokens=max_tokens,
+                    temperature=temperature,
+                    num_retrieved_docs=num_retrieved_docs,
+                )
             )
 
         keyword_info = self._generate_keywords(query)
@@ -140,19 +183,21 @@ class SmartSearchOrchestrator:
             snapshot=snapshot,
         )
         if pipeline is None:
-            return self._search_unavailable_response(
-                query=query,
-                snapshot=snapshot,
-                has_docs=has_docs,
-                decision_meta=decision_meta,
-                max_tokens=max_tokens,
-                temperature=temperature,
-                num_retrieved_docs=num_retrieved_docs,
+            return self._finalize(
+                self._search_unavailable_response(
+                    query=query,
+                    snapshot=snapshot,
+                    has_docs=has_docs,
+                    decision_meta=decision_meta,
+                    max_tokens=max_tokens,
+                    temperature=temperature,
+                    num_retrieved_docs=num_retrieved_docs,
+                )
             )
 
         pipeline_kwargs: Dict[str, Any] = {
             "search_query": search_query,
-            "num_search_results": num_search_results,
+            "num_search_results": total_limit,
             "max_tokens": max_tokens,
             "temperature": temperature,
         }
@@ -163,6 +208,8 @@ class SmartSearchOrchestrator:
                     "enable_search": True,
                 }
             )
+        if isinstance(pipeline, (HybridRAG, NoRAGBaseline)):
+            pipeline_kwargs["per_source_limit"] = per_source_limit
 
         result = pipeline.answer(query, **pipeline_kwargs)
         control_payload = {
@@ -180,11 +227,16 @@ class SmartSearchOrchestrator:
             "domain": domain,
             "selected_sources": sources,
             "enhanced_query": enhanced_query,
+            "search_total_limit": total_limit,
+            "search_per_source_limit": per_source_limit,
         }
+
+        if result.get("search_warnings"):
+            control_payload["search_warnings"] = result["search_warnings"]
 
         self._merge_control(result, control_payload)
         result.setdefault("search_query", search_query)
-        return result
+        return self._finalize(result)
 
     def _respond_small_talk(
         self,
@@ -495,6 +547,59 @@ class SmartSearchOrchestrator:
         else:
             target["control"] = payload
 
+    @staticmethod
+    def _normalize_sources(sources: Optional[List[str]]) -> List[str]:
+        normalized: List[str] = []
+        if not sources:
+            return normalized
+        for item in sources:
+            if item is None:
+                continue
+            token = str(item).strip().lower()
+            if not token or token in normalized:
+                continue
+            normalized.append(token)
+        return normalized
+
+    def _attach_search_source_metadata(self, control: Dict[str, Any]) -> None:
+        if "search_sources_requested" not in control:
+            control["search_sources_requested"] = list(self.requested_search_sources)
+        if "search_sources_active" not in control:
+            control["search_sources_active"] = list(self.active_search_sources)
+        if self.active_search_source_labels and "search_sources_active_labels" not in control:
+            control["search_sources_active_labels"] = list(self.active_search_source_labels)
+        if self.configured_search_sources and "search_sources_configured" not in control:
+            control["search_sources_configured"] = list(self.configured_search_sources)
+        if self.missing_search_sources and "search_sources_missing" not in control:
+            control["search_sources_missing"] = list(self.missing_search_sources)
+
+    def _apply_search_source_warnings(self, result: Dict[str, Any]) -> None:
+        if not self.missing_search_sources:
+            return
+        labels = [self.SEARCH_SOURCE_LABELS.get(src, src) for src in self.missing_search_sources]
+        warning = "部分搜索源不可用: " + ", ".join(labels)
+        existing = result.get("search_warnings")
+        if existing is None:
+            result["search_warnings"] = [warning]
+            return
+        if isinstance(existing, list):
+            if warning not in existing:
+                existing.append(warning)
+            return
+        if existing != warning:
+            result["search_warnings"] = [existing, warning]
+
+    def _finalize(self, result: Dict[str, Any]) -> Dict[str, Any]:
+        if not isinstance(result, dict):
+            return result
+        control = result.get("control")
+        if not isinstance(control, dict):
+            control = {}
+            result["control"] = control
+        self._attach_search_source_metadata(control)
+        self._apply_search_source_warnings(result)
+        return result
+
     def _decide(self, query: str) -> Dict[str, Any]:
         try:
             response = self.llm_client.chat(
@@ -505,14 +610,18 @@ class SmartSearchOrchestrator:
             )
 
             content = response.get("content") or ""
+            # Ensure content is a string
+            if not isinstance(content, str):
+                content = str(content) if content is not None else ""
+            
             payload = {
                 "needs_search": True,
                 "reason": None,
                 "direct_answer": None,
-                "raw_text": str(content)[:100] if content else None,  # 限制长度并转换为字符串
+                "raw_text": content[:100] if content else None,
                 "llm_raw": response.get("raw"),
-                "llm_warning": response.get("warning"),
-                "llm_error": response.get("error"),
+                "llm_warning": str(response.get("warning")) if response.get("warning") else None,
+                "llm_error": str(response.get("error")) if response.get("error") else None,
             }
 
             if response.get("error"):
@@ -526,10 +635,11 @@ class SmartSearchOrchestrator:
 
             needs_search = self._coerce_bool(parsed.get("needs_search"))
             payload["needs_search"] = needs_search
-            payload["reason"] = str(parsed.get("reason") or payload["reason"])[:100] if payload["reason"] else None
+            reason = parsed.get("reason")
+            payload["reason"] = str(reason)[:100] if reason else None
             direct_answer = parsed.get("answer") if not needs_search else None
             if direct_answer:
-                payload["direct_answer"] = str(direct_answer).strip()[:1000]  # 限制长度
+                payload["direct_answer"] = str(direct_answer).strip()[:1000]
             return payload
             
         except Exception as e:
@@ -540,7 +650,7 @@ class SmartSearchOrchestrator:
                 "raw_text": None,
                 "llm_raw": None,
                 "llm_warning": None,
-                "llm_error": str(e),
+                "llm_error": str(e)[:100],
             }
 
     @staticmethod
@@ -616,11 +726,15 @@ class SmartSearchOrchestrator:
             )
 
             content = response.get("content") or ""
+            # Ensure content is a string
+            if not isinstance(content, str):
+                content = str(content) if content is not None else ""
+            
             payload: Dict[str, Any] = {
                 "keywords": [],
-                "raw_text": str(content)[:200] if content else None,  # 限制长度
-                "llm_warning": response.get("warning"),
-                "llm_error": response.get("error"),
+                "raw_text": content[:200] if content else None,
+                "llm_warning": str(response.get("warning")) if response.get("warning") else None,
+                "llm_error": str(response.get("error")) if response.get("error") else None,
             }
 
             if response.get("error"):
@@ -638,13 +752,13 @@ class SmartSearchOrchestrator:
                     if isinstance(item, str):
                         cleaned = item.strip()
                         if cleaned:
-                            keywords.append(str(cleaned)[:50])  # 限制每个关键词长度
+                            keywords.append(str(cleaned)[:50])
             elif isinstance(raw_keywords, str):
                 cleaned = raw_keywords.strip()
                 if cleaned:
                     keywords.extend([str(part.strip())[:50] for part in cleaned.split(";") if part.strip()])
 
-            payload["keywords"] = [str(k)[:50] for k in keywords[:10]]  # 限制总数和长度
+            payload["keywords"] = [str(k)[:50] for k in keywords[:10]]
             return payload
             
         except Exception as e:

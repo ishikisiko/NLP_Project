@@ -67,6 +67,22 @@ This project demonstrates a simple Retrieval-Augmented Generation (RAG) pipeline
     }
     ```
 
+    #### Optional MCP Web Search
+
+    You can optionally add a `web-search-prime` MCP server to fan out live queries to multiple providers. Provide your BigModel credentials and endpoint details:
+
+    ```json
+    "mcpServers": {
+        "web-search-prime": {
+            "type": "http",
+            "url": "https://open.bigmodel.cn/api/mcp/web_search_prime/mcp",
+            "headers": {
+                "Authorization": "Bearer YOUR_GLM_API_KEY"
+            }
+        }
+    }
+    ```
+
 ### Supported LLM Providers
 
 - **OpenAI**: Set `LLM_PROVIDER` to `"openai"` and provide your OpenAI API key

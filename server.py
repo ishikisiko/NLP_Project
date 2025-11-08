@@ -1,12 +1,10 @@
-"""Minimal web server that exposes the No-RAG baseline through a REST API."""
-
 from __future__ import annotations
 
 import copy
 import json
 import os
 from functools import lru_cache
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Optional, List
 
 from flask import Flask, jsonify, request
 from werkzeug.utils import secure_filename
@@ -21,6 +19,21 @@ app.config['UPLOAD_FOLDER'] = UPLOAD_FOLDER
 
 class ConfigurationError(RuntimeError):
     """Raised when the application configuration is invalid."""
+
+
+def ensure_json_serializable(obj: Any) -> Any:
+    """Recursively ensure all values in a dict/list are JSON serializable."""
+    if obj is None or isinstance(obj, (bool, int, float, str)):
+        return obj
+    if isinstance(obj, dict):
+        return {str(k): ensure_json_serializable(v) for k, v in obj.items()}
+    if isinstance(obj, (list, tuple)):
+        return [ensure_json_serializable(item) for item in obj]
+    # Convert any other type to string
+    try:
+        return str(obj)
+    except Exception:
+        return None
 
 
 @lru_cache(maxsize=1)
@@ -41,7 +54,25 @@ def load_base_config() -> Dict[str, Any]:
         return json.load(config_file)
 
 
-def build_pipeline(model_override: Optional[str] = None) -> SmartSearchOrchestrator:
+def _normalize_search_sources(raw_sources: Optional[List[str]]) -> List[str]:
+    normalized: List[str] = []
+    if not raw_sources:
+        return normalized
+    for item in raw_sources:
+        if not isinstance(item, str):
+            continue
+        token = item.strip().lower()
+        if not token or token in normalized:
+            continue
+        normalized.append(token)
+    return normalized
+
+
+def build_pipeline(
+    model_override: Optional[str] = None,
+    *,
+    search_sources: Optional[List[str]] = None,
+) -> SmartSearchOrchestrator:
     """Create a pipeline configured for the current request."""
 
     # Deep copy to avoid mutating cached configuration between requests
@@ -126,13 +157,41 @@ def build_pipeline(model_override: Optional[str] = None) -> SmartSearchOrchestra
     except Exception as exc:
         raise ConfigurationError(f"Failed to build LLM client: {exc}")
 
-    serpapi_key = config.get("SERPAPI_API_KEY")
+    normalized_sources = _normalize_search_sources(search_sources)
+    configured_sources: List[str] = []
+    if (config.get("SERPAPI_API_KEY") or "").strip():
+        configured_sources.append("serp")
+    you_cfg = config.get("youSearch") or {}
+    you_key = (you_cfg.get("api_key") or config.get("YOU_API_KEY") or "").strip()
+    if you_key:
+        configured_sources.append("you")
+    mcp_cfg = (config.get("mcpServers") or {}).get("web-search-prime") or {}
+    if (mcp_cfg.get("url") or "").strip() and any((mcp_cfg.get("headers") or {}).get(token) for token in ("Authorization", "authorization")):
+        configured_sources.append("mcp")
+    google_cfg = config.get("googleSearch") or {}
+    google_key = (google_cfg.get("api_key") or config.get("GOOGLE_API_KEY") or "").strip()
+    google_cx = (google_cfg.get("cx") or config.get("GOOGLE_CX") or "").strip()
+    if google_key and google_cx:
+        configured_sources.append("google")
+
     search_client = None
-    if serpapi_key:
-        try:
-            search_client = build_search_client(serpapi_key)
-        except Exception as exc:
-            raise ConfigurationError(f"Failed to build search client: {exc}")
+    active_sources: List[str] = []
+    active_labels: List[str] = []
+    missing_sources: List[str] = []
+    try:
+        search_client = build_search_client(config, sources=normalized_sources if normalized_sources else None)
+        if search_client is not None:
+            active_sources = list(getattr(search_client, "active_sources", []))
+            active_labels = list(getattr(search_client, "active_source_labels", []))
+            missing_sources = list(getattr(search_client, "missing_requested_sources", []))
+            if not configured_sources:
+                configured_sources = list(getattr(search_client, "configured_sources", []))
+    except Exception as exc:
+        raise ConfigurationError(f"Failed to build search client: {exc}")
+
+    if not missing_sources and normalized_sources:
+        reference = active_sources if active_sources else configured_sources
+        missing_sources = [src for src in normalized_sources if src not in reference]
 
     rerank_config = config.get("rerank") or {}
     reranker: Optional[Any] = None
@@ -155,6 +214,11 @@ def build_pipeline(model_override: Optional[str] = None) -> SmartSearchOrchestra
         reranker=reranker,
         min_rerank_score=min_rerank_score,
         max_per_domain=max_per_domain,
+        requested_search_sources=normalized_sources,
+        active_search_sources=active_sources,
+        active_search_source_labels=active_labels,
+        missing_search_sources=missing_sources,
+        configured_search_sources=configured_sources,
     )
 
 
@@ -232,14 +296,25 @@ def answer() -> Any:
     if not query:
         return jsonify({"error": "Missing 'query' in request body."}), 400
 
-    try:
-        # Support both provider and model parameters for backward compatibility
-        model = payload.get("model") or payload.get("provider")
-        pipeline = build_pipeline(model_override=model)
-    except ConfigurationError as exc:
-        return jsonify({"error": str(exc)}), 500
-    except Exception as exc:  # pragma: no cover - defensive fallback
-        return jsonify({"error": f"Failed to build pipeline: {exc}"}), 500
+    search_sources: Optional[List[str]] = None
+    if payload.get("search_sources") is not None:
+        raw_sources = payload["search_sources"]
+        if not isinstance(raw_sources, list):
+            return jsonify({"error": "'search_sources' must be an array."}), 400
+        allowed_sources = {"serp", "you", "mcp", "google"}
+        normalized_sources: List[str] = []
+        seen = set()
+        for item in raw_sources:
+            if not isinstance(item, str):
+                return jsonify({"error": "Invalid search source value."}), 400
+            token = item.strip().lower()
+            if token not in allowed_sources:
+                return jsonify({"error": f"Unsupported search source '{item}'."}), 400
+            if token in seen:
+                continue
+            seen.add(token)
+            normalized_sources.append(token)
+        search_sources = normalized_sources
 
     search_pref = (payload.get("search") or "").strip().lower()
     if search_pref in {"on", "off"}:
@@ -248,21 +323,91 @@ def answer() -> Any:
         legacy_mode = (payload.get("mode") or "search").strip().lower()
         allow_search = legacy_mode != "local"
 
-    num_value = int(payload.get("num_results")) if payload.get("num_results") else 5
+    try:
+        # Support both provider and model parameters for backward compatibility
+        model = payload.get("model") or payload.get("provider")
+        pipeline = build_pipeline(
+            model_override=model,
+            search_sources=search_sources if allow_search and search_sources else None,
+        )
+    except ConfigurationError as exc:
+        return jsonify({"error": str(exc)}), 500
+    except Exception as exc:  # pragma: no cover - defensive fallback
+        return jsonify({"error": f"Failed to build pipeline: {exc}"}), 500
+
+    def _coerce_positive_int(raw_value: Any, field: str) -> Optional[int]:
+        if raw_value is None:
+            return None
+        try:
+            parsed = int(raw_value)
+        except (TypeError, ValueError):
+            raise ValueError(f"'{field}' must be a positive integer.")
+        if parsed <= 0:
+            raise ValueError(f"'{field}' must be a positive integer.")
+        return parsed
 
     try:
+        legacy_num = _coerce_positive_int(payload.get("num_results"), "num_results")
+        total_limit = _coerce_positive_int(payload.get("search_total_limit"), "search_total_limit")
+        per_source_limit = _coerce_positive_int(payload.get("search_source_limit"), "search_source_limit")
+    except ValueError as exc:
+        return jsonify({"error": str(exc)}), 400
+
+    default_total = legacy_num if legacy_num is not None else 5
+    if total_limit is None:
+        total_limit = default_total
+    if per_source_limit is None:
+        per_source_limit = total_limit
+    num_retrieved_docs = legacy_num if legacy_num is not None else total_limit
+
+    try:
+        print(f"[server] Processing query: {query[:50]}...")
         result = pipeline.answer(
             query,
-            num_search_results=num_value,
-            num_retrieved_docs=num_value,
+            num_search_results=total_limit,
+            per_source_search_results=per_source_limit,
+            num_retrieved_docs=num_retrieved_docs,
             max_tokens=int(payload.get("max_tokens")) if payload.get("max_tokens") else 5000,
             temperature=float(payload.get("temperature")) if payload.get("temperature") else 0.3,
             allow_search=allow_search,
         )
+        print(f"[server] Pipeline returned result with keys: {list(result.keys()) if isinstance(result, dict) else type(result)}")
     except Exception as exc:  # pragma: no cover - propagate runtime issues
+        import traceback
         error_msg = str(exc).encode('utf-8', errors='replace').decode('utf-8')
+        print(f"[server] Pipeline execution error: {error_msg}")
+        print(traceback.format_exc())
         return jsonify({"error": f"Pipeline execution failed: {error_msg}"}), 500
 
+    # Validate result structure
+    if not isinstance(result, dict):
+        print(f"[server] Invalid result type: {type(result)}")
+        return jsonify({"error": "服务器返回数据格式错误"}), 500
+    
+    if "answer" not in result:
+        print(f"[server] Missing 'answer' in result: {result.keys()}")
+        result["answer"] = "未能生成答案"
+    
+    # Log answer length
+    answer_len = len(result.get("answer", "")) if isinstance(result.get("answer"), str) else 0
+    print(f"[server] Answer length: {answer_len} chars")
+    
+    # Ensure all values are JSON serializable
+    try:
+        result = ensure_json_serializable(result)
+        print(f"[server] Serialization successful")
+    except Exception as exc:
+        print(f"[server] Failed to serialize result: {exc}")
+        return jsonify({"error": "响应数据序列化失败"}), 500
+    
+    # Try to create JSON to verify it works
+    try:
+        test_json = json.dumps(result, ensure_ascii=False)
+        print(f"[server] JSON creation successful, size: {len(test_json)} bytes")
+    except Exception as exc:
+        print(f"[server] JSON creation failed: {exc}")
+        return jsonify({"error": f"JSON序列化失败: {str(exc)}"}), 500
+    
     return jsonify(result)
 
 

@@ -2,6 +2,21 @@
     "LLM_PROVIDER": "glm",
     "RERANK_PROVIDER": "qwen3-rerank",
     "SERPAPI_API_KEY": "YOUR_SERPAPI_API_KEY_HERE",
+    "YOU_API_KEY": "YOUR_YOU_API_KEY_HERE",
+    "GOOGLE_API_KEY": "YOUR_GOOGLE_API_KEY_HERE",
+    "GOOGLE_CX": "YOUR_GOOGLE_CUSTOM_SEARCH_ENGINE_ID_HERE",
+    "youSearch": {
+        "country": "CN",
+        "safesearch": "moderate",
+        "include_news": true,
+        "default_count": 8
+    },
+    "googleSearch": {
+        "gl": "cn",
+        "lr": "lang_zh-CN",
+        "safe": "medium",
+        "timeout": 15
+    },
     "providers": {
         "openai": {
             "api_key": "YOUR_OPENAI_API_KEY_HERE",

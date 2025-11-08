@@ -46,7 +46,7 @@ class Qwen3Reranker(BaseReranker):
         self.base_url = (base_url or self.DEFAULT_BASE_URL).rstrip("/")
         self.request_timeout = request_timeout
 
-        self._endpoint = f"{self.base_url}/rerank"
+        self._endpoint = f"{self.base_url}/text-rerank/text-rerank"
         self._headers = {
             "Content-Type": "application/json",
             "Authorization": f"Bearer {self.api_key}",
@@ -56,19 +56,26 @@ class Qwen3Reranker(BaseReranker):
         if not hits:
             return []
 
-        documents = []
+        # 将文档转换为文本列表
+        doc_texts = []
         for idx, hit in enumerate(hits):
             snippet = hit.snippet or ""
             title = hit.title or ""
             text = f"{title}\n\n{snippet}".strip()
             if not text:
                 text = hit.url or f"Result {idx + 1}"
-            documents.append({"id": str(idx), "text": text})
+            doc_texts.append(text)
 
         payload = {
             "model": self.model,
-            "query": query,
-            "documents": documents,
+            "input": {
+                "query": query,
+                "documents": doc_texts,
+            },
+            "parameters": {
+                "return_documents": True,
+                "top_n": len(doc_texts),
+            }
         }
 
         try:
@@ -80,7 +87,15 @@ class Qwen3Reranker(BaseReranker):
             )
             response.raise_for_status()
         except requests.RequestException as exc:
-            raise RuntimeError(f"Qwen3 rerank request failed: {exc}") from exc
+            # 添加响应内容用于调试
+            error_detail = str(exc)
+            if hasattr(exc, 'response') and exc.response is not None:
+                try:
+                    error_body = exc.response.json()
+                    error_detail = f"{exc} | Response: {error_body}"
+                except:
+                    error_detail = f"{exc} | Response text: {exc.response.text[:500]}"
+            raise RuntimeError(f"Qwen3 rerank request failed: {error_detail}") from exc
 
         data = response.json()
 
@@ -119,9 +134,11 @@ class Qwen3Reranker(BaseReranker):
         """Best-effort parsing across possible DashScope schemas."""
 
         candidates = [
-            payload.get("data", {}).get("documents"),
             payload.get("output", {}).get("results"),
+            payload.get("output", {}).get("rankings"),
+            payload.get("data", {}).get("results"),
             payload.get("results"),
+            payload.get("data", {}).get("documents"),
             payload.get("data", {}).get("items"),
         ]
 
@@ -133,10 +150,12 @@ class Qwen3Reranker(BaseReranker):
                 if not isinstance(item, dict):
                     continue
                 document = item.get("document") or {}
+                # 尝试多种可能的 ID 字段名
                 doc_id = (
-                    document.get("id")
+                    item.get("index")  # DashScope 使用 index
+                    or document.get("index")
+                    or document.get("id")
                     or item.get("document_id")
-                    or item.get("index")
                     or item.get("id")
                 )
                 score = (

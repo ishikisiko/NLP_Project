@@ -109,6 +109,7 @@ class HybridRAG:
         *,
         search_query: Optional[str] = None,
         num_search_results: int = 5,
+        per_source_limit: Optional[int] = None,
         num_retrieved_docs: int = 5,
         max_tokens: int = 5000,
         temperature: float = 0.3,
@@ -118,13 +119,35 @@ class HybridRAG:
         effective_query = search_query.strip() if search_query else query
         search_error: Optional[str] = None
 
+        search_warnings: List[str] = []
+        raw_hits: List[SearchHit] = []
+
         if enable_search:
             try:
-                hits = self.search_client.search(effective_query, num_results=num_search_results)
+                per_source_cap = per_source_limit if per_source_limit is not None else num_search_results
+                raw_hits = self.search_client.search(
+                    effective_query,
+                    num_results=num_search_results,
+                    per_source_limit=per_source_cap,
+                )
+                hits = list(raw_hits)
             except Exception as exc:
                 # Surface search errors while still letting the LLM see local docs
                 hits = []
                 search_error = str(exc)
+
+        if raw_hits:
+            get_last_errors = getattr(self.search_client, "get_last_errors", None)
+            if callable(get_last_errors):
+                errors = get_last_errors() or []
+                if errors:
+                    for item in errors:
+                        source = str(item.get("source") or "搜索服务")
+                        detail = str(item.get("error") or "未知错误")
+                        if source.lower().startswith("mcp"):
+                            search_warnings.append(f"{source} 未正常工作，已使用其他搜索结果。原因：{detail}")
+                        else:
+                            search_warnings.append(f"{source} 出现异常：{detail}")
 
         hits, rerank_meta = self._apply_rerank(query, hits, limit=num_search_results)
 
@@ -167,6 +190,8 @@ class HybridRAG:
         }
         if search_error:
             payload["search_error"] = search_error
+        if search_warnings:
+            payload["search_warnings"] = search_warnings
         payload["search_query"] = effective_query if enable_search else None
         return payload
 

@@ -16,6 +16,30 @@
         <main class="chat-shell">
             <section id="chat-log" class="chat-log" aria-live="polite" aria-label="对话内容"></section>
 
+            <section id="workflow-panel" class="workflow-panel" aria-live="polite" aria-atomic="true">
+                <div class="workflow-timeline">
+                    <div class="workflow-stage" data-stage="search">
+                        <span class="workflow-stage-indicator" aria-hidden="true"></span>
+                        <div class="workflow-stage-text">
+                            <p class="workflow-stage-label">联网搜索</p>
+                            <p class="workflow-stage-status" id="workflow-stage-search-status">等待触发</p>
+                        </div>
+                    </div>
+                    <div class="workflow-stage" data-stage="llm">
+                        <span class="workflow-stage-indicator" aria-hidden="true"></span>
+                        <div class="workflow-stage-text">
+                            <p class="workflow-stage-label">LLM 推理</p>
+                            <p class="workflow-stage-status" id="workflow-stage-llm-status">未开始</p>
+                        </div>
+                    </div>
+                </div>
+                <div class="workflow-preview-header">
+                    <h3>联网搜索结果</h3>
+                    <button type="button" id="workflow-preview-toggle" class="collapse-toggle" aria-expanded="false" aria-controls="workflow-search-preview">展开全部</button>
+                </div>
+                <div id="workflow-search-preview" class="workflow-search-preview collapsed" aria-live="polite"></div>
+            </section>
+
             <form id="query-form" class="composer" autocomplete="off">
                 <div class="composer-input">
                     <textarea
@@ -36,13 +60,69 @@
                         </select>
                     </label>
 
-                    <label class="control-field toggle-field">
+                    <div class="control-field toggle-field">
                         <span>联网搜索</span>
-                        <div class="toggle">
-                            <input type="checkbox" id="search-toggle" name="search" checked>
-                            <span class="toggle-slider" aria-hidden="true"></span>
+                        <div class="toggle-group">
+                            <div class="toggle">
+                                <input type="checkbox" id="search-toggle" name="search" checked>
+                                <span class="toggle-slider" aria-hidden="true"></span>
+                            </div>
+                            <div class="search-source-dropdown hidden" id="search-source-dropdown">
+                                <button
+                                    type="button"
+                                    id="search-source-button"
+                                    class="search-source-button"
+                                    aria-haspopup="true"
+                                    aria-expanded="false"
+                                    aria-controls="search-source-menu"
+                                >搜索源</button>
+                                <div class="search-source-menu" id="search-source-menu" role="menu">
+                                    <label class="search-source-option" for="search-source-serp">
+                                        <input type="checkbox" id="search-source-serp" value="serp" checked>
+                                        <span>SerpAPI</span>
+                                    </label>
+                                    <label class="search-source-option" for="search-source-you">
+                                        <input type="checkbox" id="search-source-you" value="you" checked>
+                                        <span>You.com</span>
+                                    </label>
+                                    <label class="search-source-option" for="search-source-mcp">
+                                        <input type="checkbox" id="search-source-mcp" value="mcp" checked>
+                                        <span>MCP</span>
+                                    </label>
+                                    <label class="search-source-option" for="search-source-google">
+                                        <input type="checkbox" id="search-source-google" value="google" checked>
+                                        <span>Google</span>
+                                    </label>
+                                </div>
+                            </div>
                         </div>
-                    </label>
+                    </div>
+
+                        <label class="control-field">
+                            <span>汇总结果上限</span>
+                            <input
+                                type="number"
+                                id="search-total-limit"
+                                name="search_total_limit"
+                                min="1"
+                                max="30"
+                                value="30"
+                                inputmode="numeric"
+                            >
+                        </label>
+
+                        <label class="control-field">
+                            <span>单源结果上限</span>
+                            <input
+                                type="number"
+                                id="search-per-source-limit"
+                                name="search_source_limit"
+                                min="1"
+                                max="20"
+                                value="10"
+                                inputmode="numeric"
+                            >
+                        </label>
 
                     <div class="control-field upload-field">
                         <span>文件上传</span>

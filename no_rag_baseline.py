@@ -70,13 +70,31 @@ class NoRAGBaseline:
         *,
         search_query: Optional[str] = None,
         num_search_results: int = 5,
+        per_source_limit: Optional[int] = None,
         max_tokens: int = 5000,
         temperature: float = 0.3,
     ) -> Dict[str, object]:
         # Prefer keyword-focused query generated upstream when available.
         effective_query = search_query.strip() if search_query else query
 
-        hits = self.search_client.search(effective_query, num_results=num_search_results)
+        per_source_cap = per_source_limit if per_source_limit is not None else num_search_results
+        hits = self.search_client.search(
+            effective_query,
+            num_results=num_search_results,
+            per_source_limit=per_source_cap,
+        )
+        search_warnings: List[str] = []
+        get_last_errors = getattr(self.search_client, "get_last_errors", None)
+        if callable(get_last_errors):
+            errors = get_last_errors() or []
+            if hits and errors:
+                for item in errors:
+                    source = str(item.get("source") or "搜索服务")
+                    detail = str(item.get("error") or "未知错误")
+                    if source.lower().startswith("mcp"):
+                        search_warnings.append(f"{source} 未正常工作，已使用其他搜索结果。原因：{detail}")
+                    else:
+                        search_warnings.append(f"{source} 出现异常：{detail}")
         hits, rerank_meta = self._apply_rerank(query, hits, limit=num_search_results)
         user_prompt = self.build_prompt(query, hits)
         response = self.llm_client.chat(
@@ -96,7 +114,7 @@ class NoRAGBaseline:
                 title = hit.title or f"结果 {idx}"
                 answer += f"{idx}. [{title}]({url})\n"
 
-        return {
+        result: Dict[str, object] = {
             "query": query,
             "answer": answer,
             "search_hits": [asdict(hit) for hit in hits],
@@ -106,6 +124,9 @@ class NoRAGBaseline:
             "rerank": rerank_meta or None,
             "search_query": effective_query,
         }
+        if search_warnings:
+            result["search_warnings"] = search_warnings
+        return result
 
     def _apply_rerank(
         self,
