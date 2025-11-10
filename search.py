@@ -27,6 +27,8 @@ class SearchClient:
         num_results: int = 5,
         *,
         per_source_limit: Optional[int] = None,
+        freshness: Optional[str] = None,
+        date_restrict: Optional[str] = None,
     ) -> List[SearchHit]:
         raise NotImplementedError
 
@@ -57,6 +59,8 @@ class SerpAPISearchClient(SearchClient):
         num_results: int = 5,
         *,
         per_source_limit: Optional[int] = None,
+        freshness: Optional[str] = None,
+        date_restrict: Optional[str] = None,
     ) -> List[SearchHit]:
         limit = max(1, int(per_source_limit or num_results))
         params = {
@@ -106,6 +110,8 @@ class FallbackSearchClient(SearchClient):
         num_results: int = 5,
         *,
         per_source_limit: Optional[int] = None,
+        freshness: Optional[str] = None,
+        date_restrict: Optional[str] = None,
     ) -> List[SearchHit]:
         if not self.static_results:
             raise RuntimeError("No search backend configured. Provide a search API key or static results.")
@@ -357,6 +363,8 @@ class MCPWebSearchClient(SearchClient):
         num_results: int = 5,
         *,
         per_source_limit: Optional[int] = None,
+        freshness: Optional[str] = None,
+        date_restrict: Optional[str] = None,
     ) -> List[SearchHit]:
         # Verbose debug to aid troubleshooting
         print(f"[MCP] URL: {self._build_url()}")
@@ -388,6 +396,7 @@ class GoogleSearchClient(SearchClient):
         gl: Optional[str] = None,
         lr: Optional[str] = None,
         safe: Optional[str] = "medium",
+        date_restrict: Optional[str] = None,
     ) -> None:
         if not api_key:
             raise ValueError("Google API key is required.")
@@ -400,6 +409,7 @@ class GoogleSearchClient(SearchClient):
         self.gl = (gl or "").strip() or None  # Geolocation
         self.lr = (lr or "").strip() or None  # Language restrict
         self.safe = (safe or "").strip().lower() or None  # Safe search
+        self.date_restrict = (date_restrict or "").strip() or None  # Time range filter (e.g., d3, w1, m2, y1)
 
     def _is_valid_search_result(self, title: str, url: str, snippet: str) -> bool:
         """Filter out invalid or irrelevant search results."""
@@ -446,6 +456,7 @@ class GoogleSearchClient(SearchClient):
         num_results: int = 5,
         *,
         per_source_limit: Optional[int] = None,
+        date_restrict: Optional[str] = None,
     ) -> List[SearchHit]:
         limit = max(1, min(int(per_source_limit or num_results), 10))  # Google API max is 10 per request
         params = {
@@ -460,6 +471,10 @@ class GoogleSearchClient(SearchClient):
             params["lr"] = self.lr
         if self.safe:
             params["safe"] = self.safe
+        # Use runtime date_restrict if provided, otherwise use instance default
+        effective_date_restrict = date_restrict or self.date_restrict
+        if effective_date_restrict:
+            params["dateRestrict"] = effective_date_restrict
 
         try:
             response = requests.get(self.base_url, params=params, timeout=self.timeout)
@@ -519,6 +534,8 @@ class CombinedSearchClient(SearchClient):
         num_results: int = 5,
         *,
         per_source_limit: Optional[int] = None,
+        freshness: Optional[str] = None,
+        date_restrict: Optional[str] = None,
     ) -> List[SearchHit]:
         hits: List[SearchHit] = []
         self._last_errors = []
@@ -533,6 +550,8 @@ class CombinedSearchClient(SearchClient):
                     query,
                     num_results=per_source,
                     per_source_limit=per_source,
+                    freshness=freshness,
+                    date_restrict=date_restrict,
                 ): client
                 for client in self.clients
             }
@@ -642,9 +661,16 @@ class YouSearchClient(SearchClient):
         num_results: int = 5,
         *,
         per_source_limit: Optional[int] = None,
+        freshness: Optional[str] = None,
     ) -> List[SearchHit]:
         effective_limit = max(1, int(per_source_limit or num_results))
         params = self._build_params(query, effective_limit)
+        
+        # Use runtime freshness if provided, otherwise use instance default
+        effective_freshness = freshness or self.freshness
+        if effective_freshness:
+            params["freshness"] = effective_freshness
+        
         headers = {"X-API-Key": self.api_key}
 
         try:

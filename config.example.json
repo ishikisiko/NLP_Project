@@ -1,5 +1,23 @@
 {
     "LLM_PROVIDER": "glm",
+    "domainClassifier": {
+        "provider": "glm",
+        "model": "glm-4.6",
+        "llm_settings": {
+            "default_timeout": 30,
+            "max_retries": 2,
+            "backoff_factor": 1.5
+        }
+    },
+    "routingAndKeywords": {
+        "provider": "glm",
+        "model": "glm-4-flash",
+        "llm_settings": {
+            "default_timeout": 20,
+            "max_retries": 2,
+            "backoff_factor": 1.5
+        }
+    },
     "RERANK_PROVIDER": "qwen3-rerank",
     "SERPAPI_API_KEY": "YOUR_SERPAPI_API_KEY_HERE",
     "YOU_API_KEY": "YOUR_YOU_API_KEY_HERE",

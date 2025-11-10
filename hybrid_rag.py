@@ -114,6 +114,8 @@ class HybridRAG:
         max_tokens: int = 5000,
         temperature: float = 0.3,
         enable_search: bool = True,
+        freshness: Optional[str] = None,
+        date_restrict: Optional[str] = None,
     ) -> Dict[str, object]:
         hits: List[SearchHit] = []
         effective_query = search_query.strip() if search_query else query
@@ -129,6 +131,8 @@ class HybridRAG:
                     effective_query,
                     num_results=num_search_results,
                     per_source_limit=per_source_cap,
+                    freshness=freshness,
+                    date_restrict=date_restrict,
                 )
                 hits = list(raw_hits)
             except Exception as exc:

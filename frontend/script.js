@@ -374,13 +374,14 @@ document.addEventListener("DOMContentLoaded", () => {
     async function loadAvailableModels() {
         // Provider display names and sort order
         const providerMeta = {
-            glm: { label: "GLM", order: 1 },
-            openai: { label: "OpenAI", order: 2 },
-            anthropic: { label: "Anthropic", order: 3 },
-            google: { label: "Google", order: 4 },
-            minimax: { label: "Minimax", order: 5 },
-            hkgai: { label: "HKGAI", order: 6 },
-            openrouter: { label: "OpenRouter", order: 7 },
+            zai: { label: "Zai", order: 1 },
+            glm: { label: "GLM", order: 2 },
+            openai: { label: "OpenAI", order: 3 },
+            anthropic: { label: "Anthropic", order: 4 },
+            google: { label: "Google", order: 5 },
+            minimax: { label: "Minimax", order: 6 },
+            hkgai: { label: "HKGAI", order: 7 },
+            openrouter: { label: "OpenRouter", order: 8 },
         };
 
         function normalizeProvider(name) {
@@ -428,7 +429,7 @@ document.addEventListener("DOMContentLoaded", () => {
             modelSelect.innerHTML = "";
             const defaultOption = document.createElement("option");
             defaultOption.value = "";
-            defaultOption.textContent = "默认模型 (glm-4.6)";
+            defaultOption.textContent = "默认模型 (Zai - glm-4.6)";
             modelSelect.appendChild(defaultOption);
 
             // Sort providers by defined order, then alphabetical fallback
@@ -459,10 +460,14 @@ document.addEventListener("DOMContentLoaded", () => {
             modelSelect.innerHTML = "";
             const defaultOption = document.createElement("option");
             defaultOption.value = "";
-            defaultOption.textContent = "默认模型 (glm-4.6)";
+            defaultOption.textContent = "默认模型 (Zai - glm-4.6)";
             modelSelect.appendChild(defaultOption);
 
             const fallback = {
+                Zai: [
+                    { id: "glm-4.6", label: "Zai — glm-4.6" },
+                    { id: "glm-4.5-air", label: "Zai — glm-4.5-air" },
+                ],
                 GLM: [
                     { id: "glm", label: "GLM — glm-4.6 (provider default)" },
                 ],
@@ -487,7 +492,7 @@ document.addEventListener("DOMContentLoaded", () => {
                 ],
             };
 
-            for (const groupName of ["GLM", "OpenAI", "Anthropic", "Google", "Minimax", "HKGAI", "OpenRouter"]) {
+            for (const groupName of ["Zai", "GLM", "OpenAI", "Anthropic", "Google", "Minimax", "HKGAI", "OpenRouter"]) {
                 const optgroup = document.createElement("optgroup");
                 optgroup.label = groupName;
                 for (const item of fallback[groupName]) {

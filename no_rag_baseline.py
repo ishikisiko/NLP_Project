@@ -73,6 +73,8 @@ class NoRAGBaseline:
         per_source_limit: Optional[int] = None,
         max_tokens: int = 5000,
         temperature: float = 0.3,
+        freshness: Optional[str] = None,
+        date_restrict: Optional[str] = None,
     ) -> Dict[str, object]:
         # Prefer keyword-focused query generated upstream when available.
         effective_query = search_query.strip() if search_query else query
@@ -82,6 +84,8 @@ class NoRAGBaseline:
             effective_query,
             num_results=num_search_results,
             per_source_limit=per_source_cap,
+            freshness=freshness,
+            date_restrict=date_restrict,
         )
         search_warnings: List[str] = []
         get_last_errors = getattr(self.search_client, "get_last_errors", None)

@@ -9,7 +9,7 @@ from typing import Any, Dict, Optional, List
 from flask import Flask, jsonify, request
 from werkzeug.utils import secure_filename
 
-from main import build_llm_client, build_search_client, build_reranker
+from main import build_llm_client, build_search_client, build_reranker, build_domain_classifier_client, build_routing_keywords_client
 from smart_orchestrator import SmartSearchOrchestrator
 
 app = Flask(__name__, static_folder="frontend", static_url_path="")
@@ -105,6 +105,7 @@ def build_pipeline(
                 return matched
 
         preferred_order = [
+            "zai",
             "glm",
             "openai",
             "anthropic",
@@ -120,7 +121,7 @@ def build_pipeline(
         if configured and configured in providers_cfg:
             return configured
 
-        return next(iter(providers_cfg.keys()), "glm")
+        return next(iter(providers_cfg.keys()), "zai")
 
     config["LLM_PROVIDER"] = resolve_default_provider()
     if model_override:
@@ -156,6 +157,16 @@ def build_pipeline(
         llm_client = build_llm_client(config)
     except Exception as exc:
         raise ConfigurationError(f"Failed to build LLM client: {exc}")
+
+    try:
+        classifier_client = build_domain_classifier_client(config)
+    except Exception as exc:
+        raise ConfigurationError(f"Failed to build domain classifier client: {exc}")
+
+    try:
+        routing_client = build_routing_keywords_client(config)
+    except Exception as exc:
+        raise ConfigurationError(f"Failed to build routing/keywords client: {exc}")
 
     normalized_sources = _normalize_search_sources(search_sources)
     configured_sources: List[str] = []
@@ -209,6 +220,8 @@ def build_pipeline(
 
     return SmartSearchOrchestrator(
         llm_client=llm_client,
+        classifier_llm_client=classifier_client,
+        routing_llm_client=routing_client,
         search_client=search_client,
         data_path=app.config['UPLOAD_FOLDER'],
         reranker=reranker,
@@ -233,27 +246,31 @@ def get_available_models():
     try:
         config = load_base_config()
         models = []
+        seen_ids = set()
         
-        # Get all models from providers
+        # Get all models from providers (including available_models)
         for provider_name, provider_config in config.get("providers", {}).items():
-            model = provider_config.get("model")
-            if model:
+            # Add the default model
+            default_model = provider_config.get("model")
+            if default_model and default_model not in seen_ids:
                 models.append({
-                    "id": model,
+                    "id": default_model,
                     "provider": provider_name,
-                    "display_name": f"{provider_name.upper()} - {model}"
+                    "display_name": f"{provider_name.upper()} - {default_model}"
                 })
-        
-        # Add available models from openrouter if configured
-        openrouter_config = config.get("providers", {}).get("openrouter", {})
-        if openrouter_config and openrouter_config.get("available_models"):
-            for model in openrouter_config.get("available_models", []):
-                if not any(m["id"] == model for m in models):
-                    models.append({
-                        "id": model,
-                        "provider": "openrouter",
-                        "display_name": f"OpenRouter - {model}"
-                    })
+                seen_ids.add(default_model)
+            
+            # Add all available_models if present
+            available_models = provider_config.get("available_models", [])
+            if available_models:
+                for model in available_models:
+                    if model not in seen_ids:
+                        models.append({
+                            "id": model,
+                            "provider": provider_name,
+                            "display_name": f"{provider_name.upper()} - {model}"
+                        })
+                        seen_ids.add(model)
         
         return jsonify({"models": models})
     except Exception as e:

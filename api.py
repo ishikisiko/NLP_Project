@@ -45,7 +45,7 @@ class LLMClient:
             self.headers["anthropic-version"] = "2023-06-01"
         elif provider == "google":
             self.headers["Authorization"] = f"Bearer {self.api_key}"
-        elif provider == "glm":
+        elif provider in ("glm", "zai"):
             self.headers["Authorization"] = f"Bearer {self.api_key}"
         elif provider == "openrouter":
             self.headers["Authorization"] = f"Bearer {self.api_key}"
@@ -94,8 +94,8 @@ class LLMClient:
             "temperature": temperature,
         }
 
-        # GLM-specific adjustments
-        if self.provider == "glm":
+        # GLM/Zai-specific adjustments
+        if self.provider in ("glm", "zai"):
             payload["stream"] = False
 
         last_error = None

@@ -23,6 +23,10 @@ This project demonstrates a simple Retrieval-Augmented Generation (RAG) pipeline
     ```json
     {
         "LLM_PROVIDER": "glm",
+        "domainClassifier": {
+            "provider": "glm",
+            "model": "glm-4.6"
+        },
         "RERANK_PROVIDER": "qwen3-rerank",
         "SERPAPI_API_KEY": "YOUR_SERPAPI_API_KEY_HERE",
         "providers": {
@@ -66,6 +70,8 @@ This project demonstrates a simple Retrieval-Augmented Generation (RAG) pipeline
         }
     }
     ```
+
+    Use the optional `domainClassifier` block to point domain routing at a lighter or cheaper model without impacting the primary answer generation client.
 
     #### Optional MCP Web Search
 

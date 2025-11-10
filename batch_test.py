@@ -5,7 +5,7 @@ import re
 from datetime import datetime
 from typing import List, Optional, Dict, Any
 
-from main import build_llm_client, build_search_client, build_reranker
+from main import build_llm_client, build_search_client, build_reranker, build_domain_classifier_client
 from smart_orchestrator import SmartSearchOrchestrator
 
 
@@ -172,6 +172,7 @@ def main() -> None:
         config["LLM_PROVIDER"] = args.provider
 
     llm_client = build_llm_client(config)
+    classifier_client = build_domain_classifier_client(config)
     allow_search = args.search == "on"
 
     reranker = None
@@ -209,6 +210,7 @@ def main() -> None:
 
     orchestrator = SmartSearchOrchestrator(
         llm_client=llm_client,
+        classifier_llm_client=classifier_client,
         search_client=search_client,
         data_path=args.data_path,
         reranker=reranker,

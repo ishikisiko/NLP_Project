@@ -11,6 +11,7 @@ from no_rag_baseline import NoRAGBaseline
 from rerank import BaseReranker
 from search import SearchClient
 from source_selector import IntelligentSourceSelector
+from time_parser import parse_time_constraint, TimeConstraint
 
 
 class SmartSearchOrchestrator:
@@ -37,6 +38,8 @@ class SmartSearchOrchestrator:
         llm_client: LLMClient,
         search_client: Optional[SearchClient],
         *,
+        classifier_llm_client: Optional[LLMClient] = None,
+        routing_llm_client: Optional[LLMClient] = None,
         data_path: Optional[str] = None,
         reranker: Optional[BaseReranker] = None,
         min_rerank_score: float = 0.0,
@@ -48,6 +51,8 @@ class SmartSearchOrchestrator:
         configured_search_sources: Optional[List[str]] = None,
     ) -> None:
         self.llm_client = llm_client
+        self.classifier_llm_client = classifier_llm_client
+        self.routing_llm_client = routing_llm_client or llm_client
         self.search_client = search_client
         self.data_path = data_path
         self.reranker = reranker
@@ -58,7 +63,11 @@ class SmartSearchOrchestrator:
         self._search_pipeline: Optional[NoRAGBaseline] = None
         self._local_signature: Optional[tuple] = None
         self._hybrid_signature: Optional[tuple] = None
-        self.source_selector = IntelligentSourceSelector()
+        selector_client = classifier_llm_client or self.llm_client
+        self.source_selector = IntelligentSourceSelector(
+            llm_client=selector_client,
+            use_llm=selector_client is not None,
+        )
         self.requested_search_sources = self._normalize_sources(requested_search_sources)
         raw_active_sources = active_search_sources or getattr(search_client, "active_sources", [])
         self.active_search_sources = self._normalize_sources(raw_active_sources)
@@ -93,10 +102,14 @@ class SmartSearchOrchestrator:
         except (TypeError, ValueError):
             per_source_limit = total_limit
 
+        # 解析查询中的时间限制
+        time_constraint = parse_time_constraint(query)
+        effective_query = time_constraint.cleaned_query if time_constraint.days else query
+
         snapshot = self._snapshot_local_docs()
         has_docs = bool(snapshot)
 
-        if self._looks_like_small_talk(query):
+        if self._looks_like_small_talk(effective_query):
             return self._finalize(
                 self._respond_small_talk(
                     query=query,
@@ -121,11 +134,11 @@ class SmartSearchOrchestrator:
                 )
             )
         
-        # 在决策之前先进行领域分类
-        domain, sources = self.source_selector.select_sources(query)
-        enhanced_query = self.source_selector.generate_domain_specific_query(query, domain)
+        # 在决策之前先进行领域分类（使用清理后的查询）
+        domain, sources = self.source_selector.select_sources(effective_query)
+        enhanced_query = self.source_selector.generate_domain_specific_query(effective_query, domain)
 
-        decision = self._decide(query)
+        decision = self._decide(effective_query)
         decision_meta = {
             "needs_search": decision.get("needs_search", True),
             "reason": decision.get("reason"),
@@ -173,9 +186,9 @@ class SmartSearchOrchestrator:
                 )
             )
 
-        keyword_info = self._generate_keywords(query)
-        keywords = keyword_info.get("keywords") or [query]
-        search_query = " ".join(keywords).strip() or query
+        keyword_info = self._generate_keywords(effective_query)
+        keywords = keyword_info.get("keywords") or [effective_query]
+        search_query = " ".join(keywords).strip() or effective_query
 
         pipeline = self._build_pipeline(
             allow_search=True,
@@ -210,6 +223,11 @@ class SmartSearchOrchestrator:
             )
         if isinstance(pipeline, (HybridRAG, NoRAGBaseline)):
             pipeline_kwargs["per_source_limit"] = per_source_limit
+            # 添加时间限制参数
+            if time_constraint.you_freshness:
+                pipeline_kwargs["freshness"] = time_constraint.you_freshness
+            if time_constraint.google_date_restrict:
+                pipeline_kwargs["date_restrict"] = time_constraint.google_date_restrict
 
         result = pipeline.answer(query, **pipeline_kwargs)
         control_payload = {
@@ -230,6 +248,17 @@ class SmartSearchOrchestrator:
             "search_total_limit": total_limit,
             "search_per_source_limit": per_source_limit,
         }
+
+        # 添加时间约束信息到返回结果
+        if time_constraint.days:
+            control_payload["time_constraint"] = {
+                "original_query": time_constraint.original_query,
+                "cleaned_query": time_constraint.cleaned_query,
+                "time_expression": time_constraint.time_expression,
+                "days": time_constraint.days,
+                "you_freshness": time_constraint.you_freshness,
+                "google_date_restrict": time_constraint.google_date_restrict,
+            }
 
         if result.get("search_warnings"):
             control_payload["search_warnings"] = result["search_warnings"]
@@ -602,7 +631,7 @@ class SmartSearchOrchestrator:
 
     def _decide(self, query: str) -> Dict[str, Any]:
         try:
-            response = self.llm_client.chat(
+            response = self.routing_llm_client.chat(
                 system_prompt=self.DECISION_SYSTEM_PROMPT,
                 user_prompt=self._decision_prompt(query),
                 max_tokens=400,
@@ -718,7 +747,7 @@ class SmartSearchOrchestrator:
 
     def _generate_keywords(self, query: str) -> Dict[str, Any]:
         try:
-            response = self.llm_client.chat(
+            response = self.routing_llm_client.chat(
                 system_prompt=self.KEYWORD_SYSTEM_PROMPT,
                 user_prompt=self._keyword_prompt(query),
                 max_tokens=300,

@@ -1,10 +1,12 @@
-import re
-from typing import Dict, List, Tuple, Any
+import json
+from typing import Dict, List, Tuple, Any, Optional
+
+from api import LLMClient
 
 class IntelligentSourceSelector:
     """智能源选择器 - 带具体API配置的版本"""
     
-    def __init__(self):
+    def __init__(self, llm_client: Optional[LLMClient] = None, *, use_llm: Optional[bool] = None):
         # 领域关键词映射
         self.domain_keywords = {
             "weather": [
@@ -84,9 +86,18 @@ class IntelligentSourceSelector:
                 }
             ]
         }
+        self.llm_client = llm_client
+        self.use_llm = use_llm if use_llm is not None else llm_client is not None
     
     def classify_domain(self, query: str) -> str:
         """分类查询的领域"""
+        if self.use_llm and self.llm_client:
+            domain = self._classify_with_llm(query)
+            if domain:
+                return domain
+        return self._classify_with_keywords(query)
+
+    def _classify_with_keywords(self, query: str) -> str:
         query_lower = query.lower()
         
         # 统计各领域关键词命中数
@@ -108,6 +119,49 @@ class IntelligentSourceSelector:
                 return best_domain[0]
         
         return "general"
+
+    def _classify_with_llm(self, query: str) -> Optional[str]:
+        allowed = sorted(self.domain_keywords.keys())
+        prompt = (
+            "你是NLU分类器，请将用户问题归类到固定领域中。"
+            "只允许以下标签: weather, transportation, finance, general."
+            "输出严格的JSON，例如 {\"domain\": \"weather\"}.\n\n"
+            f"用户问题: {query}"
+        )
+        try:
+            response = self.llm_client.chat(
+                system_prompt="You classify intents into fixed domains.",
+                user_prompt=prompt,
+                max_tokens=200,
+                temperature=0.0,
+            )
+        except Exception:
+            return None
+
+        content = response.get("content")
+        if not isinstance(content, str) or not content.strip():
+            return None
+
+        try:
+            parsed = json.loads(content)
+        except json.JSONDecodeError:
+            start = content.find("{")
+            end = content.rfind("}")
+            if start == -1 or end == -1 or end <= start:
+                return None
+            try:
+                parsed = json.loads(content[start : end + 1])
+            except json.JSONDecodeError:
+                return None
+
+        if not isinstance(parsed, dict):
+            return None
+
+        domain_raw = parsed.get("domain")
+        if not isinstance(domain_raw, str):
+            return None
+        domain = domain_raw.strip().lower()
+        return domain if domain in allowed else None
     
     def select_sources(self, query: str) -> Tuple[str, List[Dict[str, Any]]]:
         """选择数据源 - 返回具体API信息"""
@@ -122,9 +176,9 @@ class IntelligentSourceSelector:
         ])
         
         try:
-            print(f"🔍 查询: '{query}'")
-            print(f"🎯 识别领域: {domain}")
-            print(f"📡 选择数据源:")
+            print(f"query: '{query}'")
+            print(f"detected domain: {domain}")
+            print("selected sources:")
             for source in sources:
                 print(f"   - {source['name']}: {source['url']}")
         except (UnicodeEncodeError, UnicodeDecodeError):
@@ -165,7 +219,7 @@ class IntelligentSourceSelector:
 
 def test_basic_functionality():
     """基础功能测试"""
-    selector = IntelligentSourceSelector()
+    selector = IntelligentSourceSelector(use_llm=False)
     
     test_cases = [
         "今天天气怎么样？",
@@ -180,7 +234,7 @@ def test_basic_functionality():
     try:
         for query in test_cases:
             domain, sources = selector.select_sources(query)
-            print(f"📝 '{query}' -> 领域: {domain}, 数据源数: {len(sources)}")
+            print(f"query '{query}' -> domain: {domain}, sources: {len(sources)}")
     except (UnicodeEncodeError, UnicodeDecodeError):
         # 在不支持UTF-8的环境中静默跳过打印
         pass

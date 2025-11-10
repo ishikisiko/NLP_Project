@@ -257,7 +257,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--provider",
         type=str,
-        help="Override the LLM provider or model (openai, anthropic, google, glm, hkgai, openrouter, minimax, or specific model like minimax/minimax-m2:free).",
+        help="Override the LLM provider or model (openai, anthropic, google, glm, zai, hkgai, openrouter, minimax, or specific model like minimax/minimax-m2:free).",
     )
     parser.add_argument(
         "--model",
@@ -278,37 +278,65 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
-def build_llm_client(config: dict) -> LLMClient:
+def build_llm_client(
+    config: dict,
+    *,
+    provider_or_model: Optional[str] = None,
+    model_override: Optional[str] = None,
+    llm_settings_override: Optional[Dict[str, Any]] = None,
+    provider_config_override: Optional[Dict[str, Any]] = None,
+) -> LLMClient:
     """Build LLM client based on provider or model configuration."""
-    provider_or_model = config.get("LLM_PROVIDER", "glm")
+    provider_or_model = provider_or_model or config.get("LLM_PROVIDER", "zai")
     
     # Check if it's a specific model (contains '/') and map to provider
     if "/" in provider_or_model:
-        # Map models to providers
-        model_to_provider = {
-            "minimax/minimax-m2:free": "openrouter",
-            "deepseek/deepseek-r1-0528:free": "openrouter",
-        }
+        # First check if this model is in any provider's available_models
+        found_provider = None
+        for provider_name, provider_cfg in config.get("providers", {}).items():
+            available = provider_cfg.get("available_models", [])
+            if provider_or_model in available:
+                found_provider = provider_name
+                break
         
-        if provider_or_model in model_to_provider:
-            provider = model_to_provider[provider_or_model]
+        if found_provider:
+            provider = found_provider
+            model_id = provider_or_model
         else:
-            # For models like "openai/gpt-3.5-turbo", extract the provider
+            # Fallback: extract provider from model path
             provider = provider_or_model.split("/")[0]
-            if provider not in ["openai", "anthropic", "google", "glm", "hkgai", "openrouter", "minimax"]:
-                # Check if it's a direct provider name
-                supported_providers = ["openai", "anthropic", "google", "glm", "hkgai", "openrouter", "minimax"]
-                if provider not in supported_providers:
-                    # If not a known provider, treat as provider name
-                    provider = provider_or_model
-        model_id = provider_or_model
+            model_id = provider_or_model
     else:
-        # It's a provider name
-        provider = provider_or_model
-        model_id = None
+        # Check if it's a known provider name
+        supported_providers = ["openai", "anthropic", "google", "glm", "zai", "hkgai", "openrouter", "minimax"]
+        if provider_or_model in supported_providers:
+            # It's a provider name
+            provider = provider_or_model
+            model_id = None
+        else:
+            # It might be a model ID from a provider's available_models
+            # Search all providers to find which one has this model
+            provider = None
+            model_id = provider_or_model
+            
+            for provider_name, provider_cfg in config.get("providers", {}).items():
+                # Check if it's the default model
+                if provider_cfg.get("model") == provider_or_model:
+                    provider = provider_name
+                    break
+                # Check if it's in available_models
+                available = provider_cfg.get("available_models", [])
+                if provider_or_model in available:
+                    provider = provider_name
+                    break
+            
+            if not provider:
+                # Fallback: treat as provider name
+                provider = provider_or_model
+                model_id = None
     
     # Validate provider
-    supported_providers = ["openai", "anthropic", "google", "glm", "hkgai", "openrouter", "minimax"]
+    supported_providers = ["openai", "anthropic", "google", "glm", "zai", "hkgai", "openrouter", "minimax"]
     if provider not in supported_providers:
         raise ValueError(f"Unsupported provider '{provider}'. Supported providers: {', '.join(supported_providers)}")
     
@@ -316,27 +344,28 @@ def build_llm_client(config: dict) -> LLMClient:
         # Use legacy HKGAI client for backward compatibility
         return HKGAIClient(api_key=config.get("providers", {}).get("hkgai", {}).get("api_key"))
     
-    provider_config = config.get("providers", {}).get(provider, {})
-    if not provider_config:
+    provider_config_raw = config.get("providers", {}).get(provider, {})
+    if not provider_config_raw:
         raise ValueError(f"Provider '{provider}' not found in configuration")
+    provider_config = dict(provider_config_raw)
+    if provider_config_override:
+        provider_config.update(provider_config_override)
     
     # Get the model ID (use specified model or fall back to provider config)
-    final_model_id = model_id or provider_config.get("model")
+    final_model_id = model_override or model_id or provider_config.get("model")
     if not final_model_id:
         raise ValueError(f"No model specified for provider '{provider}'")
-    
-    # For openrouter, check if model is in available models
-    if provider == "openrouter" and "/" in provider_or_model:
-        # Update the provider config with the specific model
-        provider_config = provider_config.copy()
-        provider_config["model"] = final_model_id
-    elif "/" not in provider_or_model and model_id:
-        # For other providers, use the specified model if provided
-        provider_config = provider_config.copy()
-        provider_config["model"] = model_id
+    provider_config["model"] = final_model_id
     
     # Get global LLM settings
-    llm_settings = config.get("llm_settings", {})
+    base_llm_settings = config.get("llm_settings", {})
+    llm_settings: Dict[str, Any]
+    if isinstance(base_llm_settings, dict):
+        llm_settings = dict(base_llm_settings)
+    else:
+        llm_settings = {}
+    if isinstance(llm_settings_override, dict):
+        llm_settings.update(llm_settings_override)
     default_timeout = llm_settings.get("default_timeout", 60)
     max_retries = llm_settings.get("max_retries", 3)
     backoff_factor = llm_settings.get("backoff_factor", 2.0)
@@ -354,6 +383,112 @@ def build_llm_client(config: dict) -> LLMClient:
         provider=provider,
         max_retries=provider_max_retries,
         backoff_factor=provider_backoff_factor
+    )
+
+
+def build_domain_classifier_client(config: dict) -> Optional[LLMClient]:
+    """Build a dedicated LLM client for domain classification if configured."""
+
+    classifier_cfg = config.get("domainClassifier") or {}
+
+    if classifier_cfg.get("enabled") is False or config.get("DOMAIN_CLASSIFIER_ENABLED") is False:
+        return None
+
+    def _normalize(value: Any) -> Optional[str]:
+        if not isinstance(value, str):
+            return None
+        stripped = value.strip()
+        return stripped or None
+
+    provider_override = _normalize(classifier_cfg.get("provider"))
+    model_override = _normalize(classifier_cfg.get("model"))
+
+    if provider_override is None:
+        provider_override = _normalize(config.get("DOMAIN_CLASSIFIER_PROVIDER"))
+    if model_override is None:
+        model_override = _normalize(config.get("DOMAIN_CLASSIFIER_MODEL"))
+
+    provider_or_model = provider_override or model_override
+    if not provider_or_model:
+        return None
+
+    llm_settings_override = classifier_cfg.get("llm_settings")
+    if not isinstance(llm_settings_override, dict):
+        llm_settings_override = None
+        fallback_settings = config.get("domain_classifier_llm_settings")
+        if isinstance(fallback_settings, dict):
+            llm_settings_override = fallback_settings
+
+    provider_config_override: Optional[Dict[str, Any]] = None
+    override_candidates = {
+        key: classifier_cfg.get(key)
+        for key in ("api_key", "base_url", "request_timeout", "max_retries", "backoff_factor")
+        if classifier_cfg.get(key) is not None
+    }
+    if override_candidates:
+        provider_config_override = override_candidates
+
+    model_param = model_override if provider_override else None
+
+    return build_llm_client(
+        config,
+        provider_or_model=provider_or_model,
+        model_override=model_param,
+        llm_settings_override=llm_settings_override,
+        provider_config_override=provider_config_override,
+    )
+
+
+def build_routing_keywords_client(config: dict) -> Optional[LLMClient]:
+    """Build a dedicated LLM client for routing and keyword generation if configured."""
+
+    routing_cfg = config.get("routingAndKeywords") or {}
+
+    if routing_cfg.get("enabled") is False or config.get("ROUTING_KEYWORDS_ENABLED") is False:
+        return None
+
+    def _normalize(value: Any) -> Optional[str]:
+        if not isinstance(value, str):
+            return None
+        stripped = value.strip()
+        return stripped or None
+
+    provider_override = _normalize(routing_cfg.get("provider"))
+    model_override = _normalize(routing_cfg.get("model"))
+
+    if provider_override is None:
+        provider_override = _normalize(config.get("ROUTING_KEYWORDS_PROVIDER"))
+    if model_override is None:
+        model_override = _normalize(config.get("ROUTING_KEYWORDS_MODEL"))
+
+    provider_or_model = provider_override or model_override
+    if not provider_or_model:
+        return None
+
+    llm_settings_override = routing_cfg.get("llm_settings")
+    if not isinstance(llm_settings_override, dict):
+        llm_settings_override = None
+        fallback_settings = config.get("routing_keywords_llm_settings")
+        if isinstance(fallback_settings, dict):
+            llm_settings_override = fallback_settings
+
+    provider_config_override: Optional[Dict[str, Any]] = None
+    override_candidates = {
+        key: routing_cfg.get(key)
+        for key in ("api_key", "base_url", "request_timeout", "max_retries", "backoff_factor")
+        if routing_cfg.get(key) is not None
+    }
+    if override_candidates:
+        provider_config_override = override_candidates
+
+    model_param = model_override if provider_override else None
+
+    return build_llm_client(
+        config,
+        provider_or_model=provider_or_model,
+        model_override=model_param,
+        llm_settings_override=llm_settings_override,
+        provider_config_override=provider_config_override,
     )
 
 
@@ -401,6 +536,8 @@ def main() -> None:
         config["LLM_PROVIDER"] = args.provider
 
     llm_client = build_llm_client(config)
+    classifier_client = build_domain_classifier_client(config)
+    routing_client = build_routing_keywords_client(config)
 
     allow_search = args.search == "on"
 
@@ -444,6 +581,8 @@ def main() -> None:
 
     orchestrator = SmartSearchOrchestrator(
         llm_client=llm_client,
+        classifier_llm_client=classifier_client,
+        routing_llm_client=routing_client,
         search_client=search_client,
         data_path=args.data_path,
         reranker=reranker,
