@@ -45,16 +45,16 @@ class IntelligentSourceSelector:
             ],
             "transportation": [
                 {
-                    "name": "高德地图API",
-                    "url": "https://restapi.amap.com/v3/traffic/status/rectangle",
-                    "type": "rest_api", 
-                    "description": "实时交通路况数据"
+                    "name": "Google Maps Directions API",
+                    "url": "https://maps.googleapis.com/maps/api/directions/json",
+                    "type": "rest_api",
+                    "description": "提供多模式交通路线规划"
                 },
                 {
-                    "name": "百度交通API",
-                    "url": "https://api.map.baidu.com/traffic/v1/traffic",
+                    "name": "Google Maps Distance Matrix API",
+                    "url": "https://maps.googleapis.com/maps/api/distancematrix/json",
                     "type": "rest_api",
-                    "description": "公共交通和路况信息"
+                    "description": "计算多个起点和终点之间的行程时间和距离"
                 }
             ],
             "finance": [

@@ -456,6 +456,7 @@ class GoogleSearchClient(SearchClient):
         num_results: int = 5,
         *,
         per_source_limit: Optional[int] = None,
+        freshness: Optional[str] = None,
         date_restrict: Optional[str] = None,
     ) -> List[SearchHit]:
         limit = max(1, min(int(per_source_limit or num_results), 10))  # Google API max is 10 per request
@@ -471,6 +472,10 @@ class GoogleSearchClient(SearchClient):
             params["lr"] = self.lr
         if self.safe:
             params["safe"] = self.safe
+        # Allow callers to specify freshness (e.g., "d1", "w1"); map to dateRestrict if unset
+        effective_freshness = (freshness or "").strip() or None
+        if effective_freshness:
+            params.setdefault("dateRestrict", effective_freshness)
         # Use runtime date_restrict if provided, otherwise use instance default
         effective_date_restrict = date_restrict or self.date_restrict
         if effective_date_restrict:
@@ -662,6 +667,7 @@ class YouSearchClient(SearchClient):
         *,
         per_source_limit: Optional[int] = None,
         freshness: Optional[str] = None,
+        date_restrict: Optional[str] = None,
     ) -> List[SearchHit]:
         effective_limit = max(1, int(per_source_limit or num_results))
         params = self._build_params(query, effective_limit)
@@ -670,6 +676,8 @@ class YouSearchClient(SearchClient):
         effective_freshness = freshness or self.freshness
         if effective_freshness:
             params["freshness"] = effective_freshness
+        # You.com API currently does not expose a direct date filter; accept the kwarg for interface parity.
+        _ = date_restrict
         
         headers = {"X-API-Key": self.api_key}
 

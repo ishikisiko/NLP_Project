@@ -1,50 +1,57 @@
 {
-    "LLM_PROVIDER": "glm",
+    "LLM_PROVIDER": "zai",
     "domainClassifier": {
-        "provider": "glm",
-        "model": "glm-4.6",
-        "llm_settings": {
-            "default_timeout": 30,
-            "max_retries": 2,
-            "backoff_factor": 1.5
-        }
+        "provider": "zai",
+        "model": "glm-4.5-air"
     },
     "routingAndKeywords": {
-        "provider": "glm",
-        "model": "glm-4-flash",
-        "llm_settings": {
-            "default_timeout": 20,
-            "max_retries": 2,
-            "backoff_factor": 1.5
-        }
+        "provider": "zai",
+        "model": "glm-4.5-air"
     },
-    "RERANK_PROVIDER": "qwen3-rerank",
     "SERPAPI_API_KEY": "YOUR_SERPAPI_API_KEY_HERE",
     "YOU_API_KEY": "YOUR_YOU_API_KEY_HERE",
     "GOOGLE_API_KEY": "YOUR_GOOGLE_API_KEY_HERE",
     "GOOGLE_CX": "YOUR_GOOGLE_CUSTOM_SEARCH_ENGINE_ID_HERE",
     "youSearch": {
-        "country": "CN",
+        "country": "US",
         "safesearch": "moderate",
         "include_news": true,
         "default_count": 8
     },
     "googleSearch": {
-        "gl": "cn",
-        "lr": "lang_zh-CN",
+        "lr": "lang_zh-CN|lang_zh-TW|lang_en",
         "safe": "medium",
         "timeout": 15
+    },
+    "mcpServers": {
+        "web-search-prime": {
+            "type": "streamable-http",
+            "url": "https://open.bigmodel.cn/api/mcp/web_search_prime/mcp",
+            "headers": {
+                "Authorization": "Bearer YOUR_MCP_AUTH_TOKEN_HERE"
+            }
+        }
+    },
+    "rerank": {
+        "enabled": true,
+        "api_key": "YOUR_DASHSCOPE_API_KEY_HERE",
+        "model": "qwen3-rerank",
+        "min_score": 0.0,
+        "max_per_domain": 1,
+        "providers": {
+            "qwen": {
+                "api_key": "YOUR_DASHSCOPE_API_KEY_HERE",
+                "model": "qwen3-rerank",
+                "base_url": "https://dashscope.aliyuncs.com/api/v1/services/rerank",
+                "timeout": 15
+            }
+        }
     },
     "providers": {
         "openai": {
             "api_key": "YOUR_OPENAI_API_KEY_HERE",
             "model": "gpt-3.5-turbo",
             "base_url": "https://api.openai.com/v1"
-        },
-        "anthropic": {
-            "api_key": "YOUR_ANTHROPIC_API_KEY_HERE",
-            "model": "claude-3-sonnet-20240229",
-            "base_url": "https://api.anthropic.com/v1"
         },
         "google": {
             "api_key": "YOUR_GOOGLE_API_KEY_HERE",
@@ -56,22 +63,28 @@
             "model": "HKGAI-V1",
             "base_url": "https://oneapi.hkgai.net/v1"
         },
-        "glm": {
-            "api_key": "YOUR_GLM_API_KEY_HERE",
+        "zai": {
+            "api_key": "YOUR_ZAI_API_KEY_HERE",
             "model": "glm-4.6",
-            "base_url": "https://open.bigmodel.cn/api/coding/paas/v4"
-        }
-    },
-    "rerank": {
-        "min_score": 0.0,
-        "max_per_domain": 1,
-        "providers": {
-            "qwen": {
-                "api_key": "YOUR_DASHSCOPE_API_KEY_HERE",
-                "model": "qwen3-rerank",
-                "base_url": "https://dashscope.aliyuncs.com/api/v1/services/rerank",
-                "timeout": 15
-            }
+            "base_url": "https://open.bigmodel.cn/api/coding/paas/v4",
+            "available_models": [
+                "glm-4.6",
+                "glm-4.5-air"
+            ]
+        },
+        "openrouter": {
+            "api_key": "YOUR_OPENROUTER_API_KEY_HERE",
+            "model": "minimax/minimax-m2:free",
+            "base_url": "https://openrouter.ai/api/v1",
+            "available_models": [
+                "minimax/minimax-m2:free",
+                "deepseek/deepseek-r1-0528:free"
+            ]
+        },
+        "minimax": {
+            "api_key": "YOUR_MINIMAX_API_KEY_HERE",
+            "model": "minimax-m2:free",
+            "base_url": "https://api.minimax.chat/v1"
         }
     }
 }
