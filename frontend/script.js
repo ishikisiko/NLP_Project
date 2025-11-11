@@ -665,6 +665,80 @@ document.addEventListener("DOMContentLoaded", () => {
         return section;
     }
 
+    function buildTimingExtras(timings) {
+        if (!timings || typeof timings !== "object") return null;
+        const searchSources = Array.isArray(timings.search_sources) ? timings.search_sources : [];
+        const llmCalls = Array.isArray(timings.llm_calls) ? timings.llm_calls : [];
+        const hasTotal = typeof timings.total_ms === "number";
+        if (!hasTotal && searchSources.length === 0 && llmCalls.length === 0) {
+            return null;
+        }
+
+        const wrapper = document.createElement("div");
+        wrapper.className = "message-extras timing-extras";
+
+        const heading = document.createElement("h4");
+        heading.textContent = "响应时间";
+        wrapper.appendChild(heading);
+
+        if (hasTotal) {
+            const totalRow = document.createElement("div");
+            totalRow.className = "timing-total";
+            totalRow.textContent = `总体: ${timings.total_ms.toFixed(2)} ms`;
+            wrapper.appendChild(totalRow);
+        }
+
+        const renderSection = (title, entries) => {
+            if (!entries.length) return;
+            const section = document.createElement("div");
+            section.className = "timing-section";
+            const sectionTitle = document.createElement("strong");
+            sectionTitle.textContent = title;
+            section.appendChild(sectionTitle);
+
+            const list = document.createElement("div");
+            list.className = "timing-list";
+
+            entries.forEach((entry) => {
+                const row = document.createElement("div");
+                row.className = "timing-row";
+
+                const label = document.createElement("span");
+                label.className = "label";
+                label.textContent = entry.label || entry.source || "未知";
+                if (entry.error) {
+                    label.textContent += `（错误：${entry.error}）`;
+                }
+
+                const value = document.createElement("span");
+                value.className = "value";
+                const duration = Number(entry.duration_ms);
+                value.textContent = Number.isFinite(duration) ? `${duration.toFixed(2)} ms` : "--";
+
+                row.appendChild(label);
+                row.appendChild(value);
+                list.appendChild(row);
+            });
+
+            section.appendChild(list);
+            wrapper.appendChild(section);
+        };
+
+        renderSection("搜索源", searchSources);
+        const normalizedLLM = llmCalls.map((entry) => {
+            const provider = entry.provider || "";
+            const model = entry.model || "";
+            const suffix = provider && model ? `${provider}/${model}` : provider || model;
+            return {
+                ...entry,
+                label: suffix ? `${entry.label || "LLM"}（${suffix}）` : entry.label || "LLM",
+            };
+        });
+        renderSection("LLM 调用", normalizedLLM);
+
+        return wrapper;
+    }
+
     function buildExtras(data) {
         const fragments = [];
 
@@ -804,6 +878,11 @@ document.addEventListener("DOMContentLoaded", () => {
             wrapper.className = "message-extras";
             wrapper.appendChild(controlFlags);
             fragments.push(wrapper);
+        }
+
+        const timingExtras = buildTimingExtras(data.response_times);
+        if (timingExtras) {
+            fragments.push(timingExtras);
         }
 
         if (metaFragments.length > 0) {

@@ -14,6 +14,8 @@ from search import (
 from rerank import BaseReranker, Qwen3Reranker
 from smart_orchestrator import SmartSearchOrchestrator
 
+ZAI_DEFAULT_BASE_URL = "https://open.bigmodel.cn/api/paas/v4"
+
 
 def build_search_client(
     config_or_key: Union[Dict[str, Any], str, None],
@@ -350,7 +352,15 @@ def build_llm_client(
     provider_config = dict(provider_config_raw)
     if provider_config_override:
         provider_config.update(provider_config_override)
-    
+
+    normalized_base = _normalize_provider_base_url(provider, provider_config.get("base_url"))
+    if normalized_base and normalized_base != provider_config.get("base_url"):
+        provider_config["base_url"] = normalized_base
+        try:
+            print(f"[llm] Normalized {provider} base URL to {normalized_base}")
+        except Exception:
+            pass
+
     # Get the model ID (use specified model or fall back to provider config)
     final_model_id = model_override or model_id or provider_config.get("model")
     if not final_model_id:
@@ -579,6 +589,7 @@ def main() -> None:
             missing_sources = list(getattr(search_client, "missing_requested_sources", []))
             configured_sources = list(getattr(search_client, "configured_sources", []))
 
+    show_timings = bool(config.get("displayResponseTimes", False))
     orchestrator = SmartSearchOrchestrator(
         llm_client=llm_client,
         classifier_llm_client=classifier_client,
@@ -593,6 +604,7 @@ def main() -> None:
         active_search_source_labels=active_labels,
         missing_search_sources=missing_sources,
         configured_search_sources=configured_sources,
+        show_timings=show_timings,
     )
     
     result = orchestrator.answer(
@@ -611,6 +623,8 @@ def main() -> None:
     no_answer = result.get("answer") is None
 
     # If there are errors/warnings or no answer, output full JSON
+    timings_payload = result.get("response_times") if show_timings else None
+
     if has_error or has_warning or no_answer:
         if args.pretty:
             print(json.dumps(result, indent=2, ensure_ascii=False))
@@ -619,7 +633,65 @@ def main() -> None:
     else:
         # Normal case: only output the answer
         print(result["answer"])
+        if show_timings and isinstance(timings_payload, dict):
+            print("\n[响应时间]")
+            total_ms = timings_payload.get("total_ms")
+            if isinstance(total_ms, (int, float)):
+                print(f"- 总耗时: {total_ms:.2f} ms")
+            search_timings = timings_payload.get("search_sources") or []
+            for entry in search_timings:
+                label = entry.get("label") or entry.get("source") or "Search"
+                duration = entry.get("duration_ms")
+                try:
+                    duration_val = float(duration)
+                except (TypeError, ValueError):
+                    duration_val = None
+                detail = f"{label}"
+                if entry.get("error"):
+                    detail += f"（错误: {entry['error']}）"
+                if duration_val is not None:
+                    print(f"- 搜索源[{detail}]: {duration_val:.2f} ms")
+                else:
+                    print(f"- 搜索源[{detail}]")
+            llm_timings = timings_payload.get("llm_calls") or []
+            for entry in llm_timings:
+                label = entry.get("label") or "LLM"
+                duration = entry.get("duration_ms")
+                try:
+                    duration_val = float(duration)
+                except (TypeError, ValueError):
+                    duration_val = None
+                provider = entry.get("provider")
+                model = entry.get("model")
+                provider_info = ""
+                if provider or model:
+                    provider_info = f"（{provider or ''}{'/' if provider and model else ''}{model or ''}）"
+                if duration_val is not None:
+                    print(f"- LLM[{label}]{provider_info}: {duration_val:.2f} ms")
+                else:
+                    print(f"- LLM[{label}]{provider_info}")
 
 
 if __name__ == "__main__":
     main()
+def _normalize_provider_base_url(provider: str, base_url: Optional[str]) -> Optional[str]:
+    """Apply provider-specific normalization for base URLs."""
+    if not base_url:
+        if provider == "zai":
+            return ZAI_DEFAULT_BASE_URL
+        return base_url
+
+    cleaned = str(base_url).strip()
+    if not cleaned:
+        return ZAI_DEFAULT_BASE_URL if provider == "zai" else cleaned
+
+    cleaned = cleaned.rstrip("/")
+
+    if provider == "zai":
+        if "/coding/paas" in cleaned:
+            cleaned = cleaned.replace("/coding/paas", "/paas")
+        if not cleaned.endswith("/v4"):
+            cleaned = cleaned.rstrip("/") + "/v4" if cleaned.endswith("/paas") else cleaned
+        return cleaned
+
+    return cleaned

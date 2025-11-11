@@ -412,6 +412,53 @@ body {
     letter-spacing: 0.04em;
 }
 
+.timing-extras {
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 14px 16px;
+    background: #f8fbff;
+}
+
+.timing-total {
+    font-weight: 600;
+    margin-bottom: 8px;
+    color: var(--text);
+}
+
+.timing-section {
+    margin-top: 8px;
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+}
+
+.timing-section strong {
+    font-size: 0.85rem;
+    color: var(--muted);
+}
+
+.timing-list {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+}
+
+.timing-row {
+    display: flex;
+    justify-content: space-between;
+    gap: 12px;
+    font-size: 0.86rem;
+}
+
+.timing-row .label {
+    color: var(--muted);
+}
+
+.timing-row .value {
+    font-weight: 600;
+    color: var(--text);
+}
+
 .source-list {
     margin: 0;
     padding-left: 1.2rem;

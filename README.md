@@ -53,7 +53,7 @@ This project demonstrates a simple Retrieval-Augmented Generation (RAG) pipeline
             "glm": {
                 "api_key": "YOUR_GLM_API_KEY_HERE",
                 "model": "glm-4.6",
-                "base_url": "https://open.bigmodel.cn/api/coding/paas/v4/"
+                "base_url": "https://open.bigmodel.cn/api/coding/paas/v4"
             }
         },
         "rerank": {

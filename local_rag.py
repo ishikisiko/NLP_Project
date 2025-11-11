@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 import re
+import time
 from dataclasses import dataclass, asdict
 from typing import List, Optional, Dict
 
@@ -9,6 +10,7 @@ import PyPDF2
 from sentence_transformers import SentenceTransformer
 
 from api import LLMClient
+from timing_utils import TimingRecorder
 
 
 @dataclass
@@ -130,6 +132,7 @@ class LocalRAG:
         num_retrieved_docs: int = 5,
         max_tokens: int = 5000,
         temperature: float = 0.3,
+        timing_recorder: Optional[TimingRecorder] = None,
     ) -> Dict[str, object]:
         """Answer a query using the local RAG pipeline."""
         retrieved_docs = self.vector_store.search(query, k=num_retrieved_docs)
@@ -142,12 +145,23 @@ class LocalRAG:
             "Answer:"
         )
 
-        response = self.llm_client.chat(
-            system_prompt="You are a helpful assistant.",
-            user_prompt=user_prompt,
-            max_tokens=max_tokens,
-            temperature=temperature,
-        )
+        response_start = time.perf_counter()
+        try:
+            response = self.llm_client.chat(
+                system_prompt="You are a helpful assistant.",
+                user_prompt=user_prompt,
+                max_tokens=max_tokens,
+                temperature=temperature,
+            )
+        finally:
+            if timing_recorder:
+                duration_ms = (time.perf_counter() - response_start) * 1000
+                timing_recorder.record_llm_call(
+                    label="local_rag_answer",
+                    duration_ms=duration_ms,
+                    provider=getattr(self.llm_client, "provider", None),
+                    model=getattr(self.llm_client, "model_id", None),
+                )
 
         # Build answer with source references
         answer = response.get("content")

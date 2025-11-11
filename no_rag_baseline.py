@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import time
 from dataclasses import asdict
 from typing import Dict, List, Optional, Tuple
 from urllib.parse import urlparse
@@ -7,6 +8,7 @@ from urllib.parse import urlparse
 from api import HKGAIClient
 from search import SearchClient, SearchHit
 from rerank import BaseReranker
+from timing_utils import TimingRecorder
 
 
 DEFAULT_SYSTEM_PROMPT = (
@@ -75,6 +77,7 @@ class NoRAGBaseline:
         temperature: float = 0.3,
         freshness: Optional[str] = None,
         date_restrict: Optional[str] = None,
+        timing_recorder: Optional[TimingRecorder] = None,
     ) -> Dict[str, object]:
         # Prefer keyword-focused query generated upstream when available.
         effective_query = search_query.strip() if search_query else query
@@ -87,6 +90,10 @@ class NoRAGBaseline:
             freshness=freshness,
             date_restrict=date_restrict,
         )
+        if timing_recorder:
+            timings_getter = getattr(self.search_client, "get_last_timings", None)
+            if callable(timings_getter):
+                timing_recorder.extend_search_timings(timings_getter())
         search_warnings: List[str] = []
         get_last_errors = getattr(self.search_client, "get_last_errors", None)
         if callable(get_last_errors):
@@ -101,12 +108,23 @@ class NoRAGBaseline:
                         search_warnings.append(f"{source} 出现异常：{detail}")
         hits, rerank_meta = self._apply_rerank(query, hits, limit=num_search_results)
         user_prompt = self.build_prompt(query, hits)
-        response = self.llm_client.chat(
-            system_prompt=self.system_prompt,
-            user_prompt=user_prompt,
-            max_tokens=max_tokens,
-            temperature=temperature,
-        )
+        response_start = time.perf_counter()
+        try:
+            response = self.llm_client.chat(
+                system_prompt=self.system_prompt,
+                user_prompt=user_prompt,
+                max_tokens=max_tokens,
+                temperature=temperature,
+            )
+        finally:
+            if timing_recorder:
+                duration_ms = (time.perf_counter() - response_start) * 1000
+                timing_recorder.record_llm_call(
+                    label="search_answer",
+                    duration_ms=duration_ms,
+                    provider=getattr(self.llm_client, "provider", None),
+                    model=getattr(self.llm_client, "model_id", None),
+                )
 
         # Build answer with URL references
         answer = response.get("content")

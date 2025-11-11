@@ -217,6 +217,7 @@ def build_pipeline(
 
     min_rerank_score = float(rerank_config.get("min_score", 0.0))
     max_per_domain = max(1, int(rerank_config.get("max_per_domain", 1)))
+    show_timings = bool(config.get("displayResponseTimes", False))
 
     return SmartSearchOrchestrator(
         llm_client=llm_client,
@@ -232,6 +233,7 @@ def build_pipeline(
         active_search_source_labels=active_labels,
         missing_search_sources=missing_sources,
         configured_search_sources=configured_sources,
+        show_timings=show_timings,
     )
 
 

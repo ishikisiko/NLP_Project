@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import time
 from typing import Any, Dict, List, Optional
 
 from api import LLMClient
@@ -12,6 +13,7 @@ from rerank import BaseReranker
 from search import SearchClient
 from source_selector import IntelligentSourceSelector
 from time_parser import parse_time_constraint, TimeConstraint
+from timing_utils import TimingRecorder
 
 
 class SmartSearchOrchestrator:
@@ -49,6 +51,7 @@ class SmartSearchOrchestrator:
         active_search_source_labels: Optional[List[str]] = None,
         missing_search_sources: Optional[List[str]] = None,
         configured_search_sources: Optional[List[str]] = None,
+        show_timings: bool = False,
     ) -> None:
         self.llm_client = llm_client
         self.classifier_llm_client = classifier_llm_client
@@ -77,6 +80,7 @@ class SmartSearchOrchestrator:
         self.missing_search_sources = self._normalize_sources(missing_sources)
         configured_sources = configured_search_sources or getattr(search_client, "configured_sources", [])
         self.configured_search_sources = self._normalize_sources(configured_sources)
+        self.show_timings = bool(show_timings)
 
     def answer(
         self,
@@ -102,6 +106,9 @@ class SmartSearchOrchestrator:
         except (TypeError, ValueError):
             per_source_limit = total_limit
 
+        timing_recorder = TimingRecorder(enabled=self.show_timings)
+        timing_recorder.start()
+
         # 解析查询中的时间限制
         time_constraint = parse_time_constraint(query)
         effective_query = time_constraint.cleaned_query if time_constraint.days else query
@@ -110,18 +117,20 @@ class SmartSearchOrchestrator:
         has_docs = bool(snapshot)
 
         if self._looks_like_small_talk(effective_query):
-            return self._finalize(
+            return self._finalize_with_timings(
                 self._respond_small_talk(
                     query=query,
                     max_tokens=max_tokens,
                     temperature=temperature,
                     allow_search=allow_search,
                     has_docs=has_docs,
-                )
+                    timing_recorder=timing_recorder,
+                ),
+                timing_recorder,
             )
 
         if not allow_search:
-            return self._finalize(
+            return self._finalize_with_timings(
                 self._answer_local_mode(
                     query=query,
                     snapshot=snapshot,
@@ -131,14 +140,16 @@ class SmartSearchOrchestrator:
                     temperature=temperature,
                     search_allowed=False,
                     decision_reason="search_disabled",
-                )
+                    timing_recorder=timing_recorder,
+                ),
+                timing_recorder,
             )
         
         # 在决策之前先进行领域分类（使用清理后的查询）
-        domain, sources = self.source_selector.select_sources(effective_query)
+        domain, sources = self.source_selector.select_sources(effective_query, timing_recorder=timing_recorder)
         enhanced_query = self.source_selector.generate_domain_specific_query(effective_query, domain)
 
-        decision = self._decide(effective_query)
+        decision = self._decide(effective_query, timing_recorder=timing_recorder)
         decision_meta = {
             "needs_search": decision.get("needs_search", True),
             "reason": decision.get("reason"),
@@ -149,7 +160,7 @@ class SmartSearchOrchestrator:
         decision_raw = decision.get("llm_raw")
 
         if not decision_meta["needs_search"] and decision.get("direct_answer"):
-            return self._finalize(
+            return self._finalize_with_timings(
                 self._direct_answer_from_decision(
                     query=query,
                     answer=decision["direct_answer"],
@@ -157,11 +168,12 @@ class SmartSearchOrchestrator:
                     decision_raw=decision_raw,
                     has_docs=has_docs,
                     allow_search=True,
-                )
+                ),
+                timing_recorder,
             )
 
         if not decision_meta["needs_search"]:
-            return self._finalize(
+            return self._finalize_with_timings(
                 self._direct_answer_via_llm(
                     query=query,
                     max_tokens=max_tokens,
@@ -170,11 +182,13 @@ class SmartSearchOrchestrator:
                     allow_search=True,
                     reason="direct_llm_fallback",
                     decision_meta=decision_meta,
-                )
+                    timing_recorder=timing_recorder,
+                ),
+                timing_recorder,
             )
 
         if not self.search_client:
-            return self._finalize(
+            return self._finalize_with_timings(
                 self._search_unavailable_response(
                     query=query,
                     snapshot=snapshot,
@@ -183,10 +197,12 @@ class SmartSearchOrchestrator:
                     max_tokens=max_tokens,
                     temperature=temperature,
                     num_retrieved_docs=num_retrieved_docs,
-                )
+                    timing_recorder=timing_recorder,
+                ),
+                timing_recorder,
             )
 
-        keyword_info = self._generate_keywords(effective_query)
+        keyword_info = self._generate_keywords(effective_query, timing_recorder=timing_recorder)
         keywords = keyword_info.get("keywords") or [effective_query]
         search_query = " ".join(keywords).strip() or effective_query
 
@@ -196,7 +212,7 @@ class SmartSearchOrchestrator:
             snapshot=snapshot,
         )
         if pipeline is None:
-            return self._finalize(
+            return self._finalize_with_timings(
                 self._search_unavailable_response(
                     query=query,
                     snapshot=snapshot,
@@ -205,7 +221,9 @@ class SmartSearchOrchestrator:
                     max_tokens=max_tokens,
                     temperature=temperature,
                     num_retrieved_docs=num_retrieved_docs,
-                )
+                    timing_recorder=timing_recorder,
+                ),
+                timing_recorder,
             )
 
         pipeline_kwargs: Dict[str, Any] = {
@@ -213,6 +231,7 @@ class SmartSearchOrchestrator:
             "num_search_results": total_limit,
             "max_tokens": max_tokens,
             "temperature": temperature,
+            "timing_recorder": timing_recorder,
         }
         if isinstance(pipeline, HybridRAG):
             pipeline_kwargs.update(
@@ -265,7 +284,7 @@ class SmartSearchOrchestrator:
 
         self._merge_control(result, control_payload)
         result.setdefault("search_query", search_query)
-        return self._finalize(result)
+        return self._finalize_with_timings(result, timing_recorder)
 
     def _respond_small_talk(
         self,
@@ -275,8 +294,12 @@ class SmartSearchOrchestrator:
         temperature: float,
         allow_search: bool,
         has_docs: bool,
+        timing_recorder: Optional[TimingRecorder],
     ) -> Dict[str, Any]:
-        direct = self.llm_client.chat(
+        direct = self._chat_with_timing(
+            self.llm_client,
+            label="small_talk_answer",
+            timing_recorder=timing_recorder,
             system_prompt=self.DIRECT_ANSWER_SYSTEM_PROMPT,
             user_prompt=query,
             max_tokens=max_tokens,
@@ -319,6 +342,7 @@ class SmartSearchOrchestrator:
         temperature: float,
         search_allowed: bool,
         decision_reason: str,
+        timing_recorder: Optional[TimingRecorder],
     ) -> Dict[str, Any]:
         decision_meta = {
             "needs_search": False,
@@ -337,6 +361,7 @@ class SmartSearchOrchestrator:
                 allow_search=search_allowed,
                 reason=decision_reason,
                 decision_meta=decision_meta,
+                timing_recorder=timing_recorder,
             )
 
         pipeline = self._ensure_local_pipeline(snapshot)
@@ -349,6 +374,7 @@ class SmartSearchOrchestrator:
                 allow_search=search_allowed,
                 reason=decision_reason,
                 decision_meta=decision_meta,
+                timing_recorder=timing_recorder,
             )
 
         result = pipeline.answer(
@@ -356,6 +382,7 @@ class SmartSearchOrchestrator:
             num_retrieved_docs=num_retrieved_docs,
             max_tokens=max_tokens,
             temperature=temperature,
+            timing_recorder=timing_recorder,
         )
         result.setdefault("search_hits", [])
         result["search_query"] = None
@@ -413,12 +440,17 @@ class SmartSearchOrchestrator:
         allow_search: bool,
         reason: str,
         decision_meta: Optional[Dict[str, Any]] = None,
+        timing_recorder: Optional[TimingRecorder],
     ) -> Dict[str, Any]:
-        fallback = self.llm_client.chat(
+        fallback = self._chat_with_timing(
+            self.llm_client,
+            label="direct_answer",
+            timing_recorder=timing_recorder,
             system_prompt=self.DIRECT_ANSWER_SYSTEM_PROMPT,
             user_prompt=query,
             max_tokens=max_tokens,
             temperature=temperature,
+            extra={"stage": reason},
         )
         meta = (
             dict(decision_meta)
@@ -467,6 +499,7 @@ class SmartSearchOrchestrator:
         max_tokens: int,
         temperature: float,
         num_retrieved_docs: int,
+        timing_recorder: Optional[TimingRecorder],
     ) -> Dict[str, Any]:
         result = self._answer_local_mode(
             query=query,
@@ -477,6 +510,7 @@ class SmartSearchOrchestrator:
             temperature=temperature,
             search_allowed=True,
             decision_reason="search_unavailable",
+            timing_recorder=timing_recorder,
         )
         self._merge_control(
             result,
@@ -629,13 +663,17 @@ class SmartSearchOrchestrator:
         self._apply_search_source_warnings(result)
         return result
 
-    def _decide(self, query: str) -> Dict[str, Any]:
+    def _decide(self, query: str, timing_recorder: Optional[TimingRecorder]) -> Dict[str, Any]:
         try:
-            response = self.routing_llm_client.chat(
+            response = self._chat_with_timing(
+                self.routing_llm_client,
+                label="search_decision",
+                timing_recorder=timing_recorder,
                 system_prompt=self.DECISION_SYSTEM_PROMPT,
                 user_prompt=self._decision_prompt(query),
                 max_tokens=400,
                 temperature=0.0,
+                extra={"stage": "decision"},
             )
 
             content = response.get("content") or ""
@@ -745,13 +783,17 @@ class SmartSearchOrchestrator:
 
         return False
 
-    def _generate_keywords(self, query: str) -> Dict[str, Any]:
+    def _generate_keywords(self, query: str, timing_recorder: Optional[TimingRecorder]) -> Dict[str, Any]:
         try:
-            response = self.routing_llm_client.chat(
+            response = self._chat_with_timing(
+                self.routing_llm_client,
+                label="keyword_generation",
+                timing_recorder=timing_recorder,
                 system_prompt=self.KEYWORD_SYSTEM_PROMPT,
                 user_prompt=self._keyword_prompt(query),
                 max_tokens=300,
                 temperature=0.2,
+                extra={"stage": "keywords"},
             )
 
             content = response.get("content") or ""
@@ -842,3 +884,39 @@ class SmartSearchOrchestrator:
             "关键词应覆盖查询核心信息。\n\n"
             "用户问题:\n" + query
         )
+
+    def _finalize_with_timings(
+        self,
+        result: Dict[str, Any],
+        timing_recorder: TimingRecorder,
+    ) -> Dict[str, Any]:
+        finalized = self._finalize(result)
+        if timing_recorder.enabled:
+            timing_recorder.stop()
+            payload = timing_recorder.to_dict()
+            if payload:
+                finalized["response_times"] = payload
+        return finalized
+
+    def _chat_with_timing(
+        self,
+        client: LLMClient,
+        *,
+        label: str,
+        timing_recorder: Optional[TimingRecorder],
+        extra: Optional[Dict[str, Any]] = None,
+        **chat_kwargs: Any,
+    ) -> Dict[str, Any]:
+        start = time.perf_counter()
+        try:
+            return client.chat(**chat_kwargs)
+        finally:
+            if timing_recorder:
+                duration_ms = (time.perf_counter() - start) * 1000
+                timing_recorder.record_llm_call(
+                    label=label,
+                    duration_ms=duration_ms,
+                    provider=getattr(client, "provider", None),
+                    model=getattr(client, "model_id", None),
+                    extra=extra,
+                )

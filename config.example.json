@@ -1,4 +1,5 @@
 {
+    "displayResponseTimes": true,
     "LLM_PROVIDER": "zai",
     "domainClassifier": {
         "provider": "zai",

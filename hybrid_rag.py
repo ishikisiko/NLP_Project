@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import textwrap
+import time
 from dataclasses import asdict
 from typing import Dict, List, Optional, Tuple
 from urllib.parse import urlparse
@@ -9,6 +10,7 @@ from api import LLMClient
 from local_rag import Document, FileReader, TextSplitter, VectorStore
 from search import SearchClient, SearchHit
 from rerank import BaseReranker
+from timing_utils import TimingRecorder
 
 
 HYBRID_SYSTEM_PROMPT = (
@@ -116,6 +118,7 @@ class HybridRAG:
         enable_search: bool = True,
         freshness: Optional[str] = None,
         date_restrict: Optional[str] = None,
+        timing_recorder: Optional[TimingRecorder] = None,
     ) -> Dict[str, object]:
         hits: List[SearchHit] = []
         effective_query = search_query.strip() if search_query else query
@@ -139,6 +142,11 @@ class HybridRAG:
                 # Surface search errors while still letting the LLM see local docs
                 hits = []
                 search_error = str(exc)
+            finally:
+                if timing_recorder:
+                    timings_getter = getattr(self.search_client, "get_last_timings", None)
+                    if callable(timings_getter):
+                        timing_recorder.extend_search_timings(timings_getter())
 
         if raw_hits:
             get_last_errors = getattr(self.search_client, "get_last_errors", None)
@@ -160,12 +168,23 @@ class HybridRAG:
             retrieved_docs = self.vector_store.search(query, k=num_retrieved_docs)
 
         user_prompt = self._build_prompt(query, hits, retrieved_docs)
-        response = self.llm_client.chat(
-            system_prompt=HYBRID_SYSTEM_PROMPT,
-            user_prompt=user_prompt,
-            max_tokens=max_tokens,
-            temperature=temperature,
-        )
+        response_start = time.perf_counter()
+        try:
+            response = self.llm_client.chat(
+                system_prompt=HYBRID_SYSTEM_PROMPT,
+                user_prompt=user_prompt,
+                max_tokens=max_tokens,
+                temperature=temperature,
+            )
+        finally:
+            if timing_recorder:
+                duration_ms = (time.perf_counter() - response_start) * 1000
+                timing_recorder.record_llm_call(
+                    label="hybrid_answer",
+                    duration_ms=duration_ms,
+                    provider=getattr(self.llm_client, "provider", None),
+                    model=getattr(self.llm_client, "model_id", None),
+                )
 
         answer = response.get("content")
         if answer:

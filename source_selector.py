@@ -1,7 +1,9 @@
 import json
+import time
 from typing import Dict, List, Tuple, Any, Optional
 
 from api import LLMClient
+from timing_utils import TimingRecorder
 
 class IntelligentSourceSelector:
     """智能源选择器 - 带具体API配置的版本"""
@@ -89,10 +91,10 @@ class IntelligentSourceSelector:
         self.llm_client = llm_client
         self.use_llm = use_llm if use_llm is not None else llm_client is not None
     
-    def classify_domain(self, query: str) -> str:
+    def classify_domain(self, query: str, timing_recorder: Optional[TimingRecorder] = None) -> str:
         """分类查询的领域"""
         if self.use_llm and self.llm_client:
-            domain = self._classify_with_llm(query)
+            domain = self._classify_with_llm(query, timing_recorder=timing_recorder)
             if domain:
                 return domain
         return self._classify_with_keywords(query)
@@ -120,7 +122,7 @@ class IntelligentSourceSelector:
         
         return "general"
 
-    def _classify_with_llm(self, query: str) -> Optional[str]:
+    def _classify_with_llm(self, query: str, timing_recorder: Optional[TimingRecorder] = None) -> Optional[str]:
         allowed = sorted(self.domain_keywords.keys())
         prompt = (
             "你是NLU分类器，请将用户问题归类到固定领域中。"
@@ -129,6 +131,7 @@ class IntelligentSourceSelector:
             f"用户问题: {query}"
         )
         try:
+            response_start = time.perf_counter()
             response = self.llm_client.chat(
                 system_prompt="You classify intents into fixed domains.",
                 user_prompt=prompt,
@@ -137,6 +140,16 @@ class IntelligentSourceSelector:
             )
         except Exception:
             return None
+        finally:
+            if timing_recorder:
+                duration_ms = (time.perf_counter() - response_start) * 1000
+                timing_recorder.record_llm_call(
+                    label="domain_classification",
+                    duration_ms=duration_ms,
+                    provider=getattr(self.llm_client, "provider", None),
+                    model=getattr(self.llm_client, "model_id", None),
+                    extra={"stage": "source_selector"},
+                )
 
         content = response.get("content")
         if not isinstance(content, str) or not content.strip():
@@ -163,9 +176,9 @@ class IntelligentSourceSelector:
         domain = domain_raw.strip().lower()
         return domain if domain in allowed else None
     
-    def select_sources(self, query: str) -> Tuple[str, List[Dict[str, Any]]]:
+    def select_sources(self, query: str, timing_recorder: Optional[TimingRecorder] = None) -> Tuple[str, List[Dict[str, Any]]]:
         """选择数据源 - 返回具体API信息"""
-        domain = self.classify_domain(query)
+        domain = self.classify_domain(query, timing_recorder=timing_recorder)
         sources = self.domain_sources.get(domain, [
             {
                 "name": "Default Search",

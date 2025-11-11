@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import concurrent.futures
 import re
+import time
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional, Set
 
@@ -20,6 +21,18 @@ class SearchClient:
 
     source_id: str = "generic"
     display_name: str = "Search"
+
+    def __init__(self) -> None:
+        self._last_timings: List[Dict[str, Any]] = []
+
+    def _reset_timings(self) -> None:
+        self._last_timings = []
+
+    def _append_timing(self, payload: Dict[str, Any]) -> None:
+        self._last_timings.append(payload)
+
+    def get_last_timings(self) -> List[Dict[str, Any]]:
+        return list(self._last_timings)
 
     def search(
         self,
@@ -46,6 +59,7 @@ class SerpAPISearchClient(SearchClient):
         timeout: int = 15,
         engine: str = "google",
     ) -> None:
+        super().__init__()
         if not api_key:
             raise ValueError("SerpAPI API key is required.")
         self.api_key = api_key
@@ -62,46 +76,66 @@ class SerpAPISearchClient(SearchClient):
         freshness: Optional[str] = None,
         date_restrict: Optional[str] = None,
     ) -> List[SearchHit]:
-        limit = max(1, int(per_source_limit or num_results))
-        params = {
-            "engine": self.engine,
-            "q": query,
-            "num": limit,
-            "api_key": self.api_key,
-        }
-
+        self._reset_timings()
+        start = time.perf_counter()
+        error_message: Optional[str] = None
         try:
-            response = requests.get(self.base_url, params=params, timeout=self.timeout)
-            response.raise_for_status()
-        except requests.RequestException as exc:
-            raise RuntimeError(f"SerpAPI search failed: {exc}") from exc
+            limit = max(1, int(per_source_limit or num_results))
+            params = {
+                "engine": self.engine,
+                "q": query,
+                "num": limit,
+                "api_key": self.api_key,
+            }
 
-        payload = response.json()
-        organic_results = payload.get("organic_results") or []
+            try:
+                response = requests.get(self.base_url, params=params, timeout=self.timeout)
+                response.raise_for_status()
+            except requests.RequestException as exc:
+                error_message = str(exc)
+                raise RuntimeError(f"SerpAPI search failed: {exc}") from exc
 
-        hits: List[SearchHit] = []
-        for entry in organic_results[:limit]:
-            title = entry.get("title") or ""
-            link = entry.get("link") or entry.get("url") or ""
-            snippet = entry.get("snippet") or entry.get("snippet_highlighted_words") or ""
-            if isinstance(snippet, list):
-                snippet = " ".join(snippet)
+            payload = response.json()
+            organic_results = payload.get("organic_results") or []
 
-            if title or link or snippet:
-                hits.append(
-                    SearchHit(
-                        title=title.strip(),
-                        url=link.strip(),
-                        snippet=snippet.strip(),
+            hits: List[SearchHit] = []
+            for entry in organic_results[:limit]:
+                title = entry.get("title") or ""
+                link = entry.get("link") or entry.get("url") or ""
+                snippet = entry.get("snippet") or entry.get("snippet_highlighted_words") or ""
+                if isinstance(snippet, list):
+                    snippet = " ".join(snippet)
+
+                if title or link or snippet:
+                    hits.append(
+                        SearchHit(
+                            title=title.strip(),
+                            url=link.strip(),
+                            snippet=snippet.strip(),
+                        )
                     )
-                )
-        return hits
+            return hits
+        except Exception as exc:
+            if error_message is None:
+                error_message = str(exc)
+            raise
+        finally:
+            duration_ms = (time.perf_counter() - start) * 1000
+            timing_payload: Dict[str, Any] = {
+                "source": self.source_id,
+                "label": self.display_name,
+                "duration_ms": round(duration_ms, 2),
+            }
+            if error_message:
+                timing_payload["error"] = error_message
+            self._append_timing(timing_payload)
 
 
 class FallbackSearchClient(SearchClient):
     """Fallback client for environments without a search API key."""
 
     def __init__(self, static_results: Optional[List[SearchHit]] = None) -> None:
+        super().__init__()
         self.static_results = static_results or []
 
     def search(
@@ -113,10 +147,27 @@ class FallbackSearchClient(SearchClient):
         freshness: Optional[str] = None,
         date_restrict: Optional[str] = None,
     ) -> List[SearchHit]:
-        if not self.static_results:
-            raise RuntimeError("No search backend configured. Provide a search API key or static results.")
-        limit = max(1, int(per_source_limit or num_results))
-        return self.static_results[:limit]
+        self._reset_timings()
+        start = time.perf_counter()
+        error_message: Optional[str] = None
+        try:
+            if not self.static_results:
+                raise RuntimeError("No search backend configured. Provide a search API key or static results.")
+            limit = max(1, int(per_source_limit or num_results))
+            return self.static_results[:limit]
+        except Exception as exc:
+            error_message = str(exc)
+            raise
+        finally:
+            duration_ms = (time.perf_counter() - start) * 1000
+            payload = {
+                "source": self.source_id,
+                "label": self.display_name,
+                "duration_ms": round(duration_ms, 2),
+            }
+            if error_message:
+                payload["error"] = error_message
+            self._append_timing(payload)
 
 
 class MCPWebSearchClient(SearchClient):
@@ -141,6 +192,7 @@ class MCPWebSearchClient(SearchClient):
         timeout: int = 20,
         search_path: str = "",
     ) -> None:
+        super().__init__()
         if not base_url:
             raise ValueError("MCP web-search-prime base URL is required.")
         self.base_url = base_url.rstrip("/")
@@ -366,18 +418,38 @@ class MCPWebSearchClient(SearchClient):
         freshness: Optional[str] = None,
         date_restrict: Optional[str] = None,
     ) -> List[SearchHit]:
-        # Verbose debug to aid troubleshooting
-        print(f"[MCP] URL: {self._build_url()}")
-        print("[MCP] Headers (sanitized):", {k: ('***' if k.lower() == 'authorization' else v) for k, v in self.headers.items()})
+        self._reset_timings()
+        start = time.perf_counter()
+        error_message: Optional[str] = None
+        try:
+            # Verbose debug to aid troubleshooting
+            print(f"[MCP] URL: {self._build_url()}")
+            print(
+                "[MCP] Headers (sanitized):",
+                {k: ("***" if k.lower() == "authorization" else v) for k, v in self.headers.items()},
+            )
 
-        # Full MCP handshake and tool call
-        self._initialize()
-        effective_limit = max(1, int(per_source_limit or num_results))
-        envelope = self._call_web_search(query, effective_limit)
-        print(f"[MCP] Raw envelope: {envelope}")
+            # Full MCP handshake and tool call
+            self._initialize()
+            effective_limit = max(1, int(per_source_limit or num_results))
+            envelope = self._call_web_search(query, effective_limit)
+            print(f"[MCP] Raw envelope: {envelope}")
 
-        hits = self._extract_hits_from_result(envelope, effective_limit)
-        return hits
+            hits = self._extract_hits_from_result(envelope, effective_limit)
+            return hits
+        except Exception as exc:
+            error_message = str(exc)
+            raise
+        finally:
+            duration_ms = (time.perf_counter() - start) * 1000
+            payload = {
+                "source": self.source_id,
+                "label": self.display_name,
+                "duration_ms": round(duration_ms, 2),
+            }
+            if error_message:
+                payload["error"] = error_message
+            self._append_timing(payload)
 
 
 class GoogleSearchClient(SearchClient):
@@ -398,6 +470,7 @@ class GoogleSearchClient(SearchClient):
         safe: Optional[str] = "medium",
         date_restrict: Optional[str] = None,
     ) -> None:
+        super().__init__()
         if not api_key:
             raise ValueError("Google API key is required.")
         if not cx:
@@ -459,64 +532,85 @@ class GoogleSearchClient(SearchClient):
         freshness: Optional[str] = None,
         date_restrict: Optional[str] = None,
     ) -> List[SearchHit]:
-        limit = max(1, min(int(per_source_limit or num_results), 10))  # Google API max is 10 per request
-        params = {
-            "key": self.api_key,
-            "cx": self.cx,
-            "q": query,
-            "num": limit,
-        }
-        if self.gl:
-            params["gl"] = self.gl
-        if self.lr:
-            params["lr"] = self.lr
-        if self.safe:
-            params["safe"] = self.safe
-        # Allow callers to specify freshness (e.g., "d1", "w1"); map to dateRestrict if unset
-        effective_freshness = (freshness or "").strip() or None
-        if effective_freshness:
-            params.setdefault("dateRestrict", effective_freshness)
-        # Use runtime date_restrict if provided, otherwise use instance default
-        effective_date_restrict = date_restrict or self.date_restrict
-        if effective_date_restrict:
-            params["dateRestrict"] = effective_date_restrict
-
+        self._reset_timings()
+        start = time.perf_counter()
+        error_message: Optional[str] = None
         try:
-            response = requests.get(self.base_url, params=params, timeout=self.timeout)
-            response.raise_for_status()
-        except requests.RequestException as exc:
-            raise RuntimeError(f"Google Search failed: {exc}") from exc
+            limit = max(1, min(int(per_source_limit or num_results), 10))  # Google API max is 10 per request
+            params = {
+                "key": self.api_key,
+                "cx": self.cx,
+                "q": query,
+                "num": limit,
+            }
+            if self.gl:
+                params["gl"] = self.gl
+            if self.lr:
+                params["lr"] = self.lr
+            if self.safe:
+                params["safe"] = self.safe
+            # Allow callers to specify freshness (e.g., "d1", "w1"); map to dateRestrict if unset
+            effective_freshness = (freshness or "").strip() or None
+            if effective_freshness:
+                params.setdefault("dateRestrict", effective_freshness)
+            # Use runtime date_restrict if provided, otherwise use instance default
+            effective_date_restrict = date_restrict or self.date_restrict
+            if effective_date_restrict:
+                params["dateRestrict"] = effective_date_restrict
 
-        try:
-            payload = response.json()
-        except ValueError as exc:
-            raise RuntimeError("Google Search returned non-JSON payload") from exc
+            try:
+                response = requests.get(self.base_url, params=params, timeout=self.timeout)
+                response.raise_for_status()
+            except requests.RequestException as exc:
+                error_message = str(exc)
+                raise RuntimeError(f"Google Search failed: {exc}") from exc
 
-        items = payload.get("items") or []
-        hits: List[SearchHit] = []
-        for entry in items[:limit]:
-            if not isinstance(entry, dict):
-                continue
-            title = (entry.get("title") or "").strip()
-            link = (entry.get("link") or "").strip()
-            snippet = (entry.get("snippet") or "").strip()
-            
-            # Filter out invalid search results
-            if self._is_valid_search_result(title, link, snippet):
-                hits.append(
-                    SearchHit(
-                        title=title,
-                        url=link,
-                        snippet=snippet,
+            try:
+                payload = response.json()
+            except ValueError as exc:
+                error_message = str(exc)
+                raise RuntimeError("Google Search returned non-JSON payload") from exc
+
+            items = payload.get("items") or []
+            hits: List[SearchHit] = []
+            for entry in items[:limit]:
+                if not isinstance(entry, dict):
+                    continue
+                title = (entry.get("title") or "").strip()
+                link = (entry.get("link") or "").strip()
+                snippet = (entry.get("snippet") or "").strip()
+
+                # Filter out invalid search results
+                if self._is_valid_search_result(title, link, snippet):
+                    hits.append(
+                        SearchHit(
+                            title=title,
+                            url=link,
+                            snippet=snippet,
+                        )
                     )
-                )
-        return hits
+            return hits
+        except Exception as exc:
+            if error_message is None:
+                error_message = str(exc)
+            raise
+        finally:
+            duration_ms = (time.perf_counter() - start) * 1000
+            payload = {
+                "source": self.source_id,
+                "label": self.display_name,
+                "duration_ms": round(duration_ms, 2),
+            }
+            if error_message:
+                payload["error"] = error_message
+            self._append_timing(payload)
 
 
 class CombinedSearchClient(SearchClient):
     """Fan out to multiple search clients concurrently and merge unique hits."""
 
     def __init__(self, clients: List[SearchClient]) -> None:
+        super().__init__()
         if not clients:
             raise ValueError("At least one search client is required.")
         self.clients = clients
@@ -542,6 +636,7 @@ class CombinedSearchClient(SearchClient):
         freshness: Optional[str] = None,
         date_restrict: Optional[str] = None,
     ) -> List[SearchHit]:
+        self._reset_timings()
         hits: List[SearchHit] = []
         self._last_errors = []
 
@@ -549,26 +644,38 @@ class CombinedSearchClient(SearchClient):
         per_source = max(1, int(per_source_limit or total_limit))
 
         with concurrent.futures.ThreadPoolExecutor(max_workers=len(self.clients)) as pool:
-            future_map = {
-                pool.submit(
+            future_map: Dict[concurrent.futures.Future, SearchClient] = {}
+            start_times: Dict[concurrent.futures.Future, float] = {}
+            for client in self.clients:
+                future = pool.submit(
                     client.search,
                     query,
                     num_results=per_source,
                     per_source_limit=per_source,
                     freshness=freshness,
                     date_restrict=date_restrict,
-                ): client
-                for client in self.clients
-            }
+                )
+                future_map[future] = client
+                start_times[future] = time.perf_counter()
+
             for future in concurrent.futures.as_completed(future_map):
                 client = future_map[future]
                 label = self._label_for_client(client)
+                duration_ms = round((time.perf_counter() - start_times.get(future, 0.0)) * 1000, 2)
+                timing_payload = {
+                    "source": getattr(client, "source_id", type(client).__name__.lower()),
+                    "label": label,
+                    "duration_ms": duration_ms,
+                }
                 try:
                     chunk = future.result() or []
                 except Exception as exc:
                     self._last_errors.append({"source": label, "error": str(exc)})
+                    timing_payload["error"] = str(exc)
+                    self._append_timing(timing_payload)
                     continue
 
+                self._append_timing(timing_payload)
                 hits.extend(chunk)
 
         deduped: List[SearchHit] = []
@@ -607,6 +714,7 @@ class YouSearchClient(SearchClient):
         default_count: int = 10,
         extra_params: Optional[Dict[str, Any]] = None,
     ) -> None:
+        super().__init__()
         if not api_key:
             raise ValueError("You.com API key is required.")
         self.api_key = api_key
@@ -669,35 +777,55 @@ class YouSearchClient(SearchClient):
         freshness: Optional[str] = None,
         date_restrict: Optional[str] = None,
     ) -> List[SearchHit]:
-        effective_limit = max(1, int(per_source_limit or num_results))
-        params = self._build_params(query, effective_limit)
-        
-        # Use runtime freshness if provided, otherwise use instance default
-        effective_freshness = freshness or self.freshness
-        if effective_freshness:
-            params["freshness"] = effective_freshness
-        # You.com API currently does not expose a direct date filter; accept the kwarg for interface parity.
-        _ = date_restrict
-        
-        headers = {"X-API-Key": self.api_key}
-
+        self._reset_timings()
+        start = time.perf_counter()
+        error_message: Optional[str] = None
         try:
-            response = requests.get(self.base_url, params=params, headers=headers, timeout=self.timeout)
-            response.raise_for_status()
-        except requests.RequestException as exc:
-            raise RuntimeError(f"You.com search failed: {exc}") from exc
+            effective_limit = max(1, int(per_source_limit or num_results))
+            params = self._build_params(query, effective_limit)
 
-        try:
-            payload = response.json()
-        except ValueError as exc:
-            raise RuntimeError("You.com search returned non-JSON payload") from exc
+            # Use runtime freshness if provided, otherwise use instance default
+            effective_freshness = freshness or self.freshness
+            if effective_freshness:
+                params["freshness"] = effective_freshness
+            # You.com API currently does not expose a direct date filter; accept the kwarg for interface parity.
+            _ = date_restrict
 
-        results = payload.get("results") if isinstance(payload, dict) else None
-        web_hits = self._extract_section((results or {}).get("web"), effective_limit)
-        if len(web_hits) >= effective_limit or not self.include_news:
-            return web_hits[:effective_limit]
+            headers = {"X-API-Key": self.api_key}
 
-        remaining = effective_limit - len(web_hits)
-        news_hits = self._extract_section((results or {}).get("news"), remaining)
-        combined = web_hits + news_hits
-        return combined[:effective_limit]
+            try:
+                response = requests.get(self.base_url, params=params, headers=headers, timeout=self.timeout)
+                response.raise_for_status()
+            except requests.RequestException as exc:
+                error_message = str(exc)
+                raise RuntimeError(f"You.com search failed: {exc}") from exc
+
+            try:
+                payload = response.json()
+            except ValueError as exc:
+                error_message = str(exc)
+                raise RuntimeError("You.com search returned non-JSON payload") from exc
+
+            results = payload.get("results") if isinstance(payload, dict) else None
+            web_hits = self._extract_section((results or {}).get("web"), effective_limit)
+            if len(web_hits) >= effective_limit or not self.include_news:
+                return web_hits[:effective_limit]
+
+            remaining = effective_limit - len(web_hits)
+            news_hits = self._extract_section((results or {}).get("news"), remaining)
+            combined = web_hits + news_hits
+            return combined[:effective_limit]
+        except Exception as exc:
+            if error_message is None:
+                error_message = str(exc)
+            raise
+        finally:
+            duration_ms = (time.perf_counter() - start) * 1000
+            payload = {
+                "source": self.source_id,
+                "label": self.display_name,
+                "duration_ms": round(duration_ms, 2),
+            }
+            if error_message:
+                payload["error"] = error_message
+            self._append_timing(payload)
