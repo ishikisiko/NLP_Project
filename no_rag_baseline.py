@@ -78,6 +78,7 @@ class NoRAGBaseline:
         freshness: Optional[str] = None,
         date_restrict: Optional[str] = None,
         timing_recorder: Optional[TimingRecorder] = None,
+        reference_limit: Optional[int] = None,
     ) -> Dict[str, object]:
         # Prefer keyword-focused query generated upstream when available.
         effective_query = search_query.strip() if search_query else query
@@ -128,10 +129,11 @@ class NoRAGBaseline:
 
         # Build answer with URL references
         answer = response.get("content")
-        if answer and hits:
+        reference_hits = hits if reference_limit is None else hits[:reference_limit]
+        if answer and reference_hits:
             # Append reference list
             answer += "\n\n**参考链接：**\n"
-            for idx, hit in enumerate(hits, start=1):
+            for idx, hit in enumerate(reference_hits, start=1):
                 url = hit.url or "No URL available."
                 title = hit.title or f"结果 {idx}"
                 answer += f"{idx}. [{title}]({url})\n"
@@ -149,6 +151,102 @@ class NoRAGBaseline:
         if search_warnings:
             result["search_warnings"] = search_warnings
         return result
+
+    def answer_stream(
+        self,
+        query: str,
+        *,
+        search_query: Optional[str] = None,
+        num_search_results: int = 5,
+        per_source_limit: Optional[int] = None,
+        max_tokens: int = 5000,
+        temperature: float = 0.3,
+        freshness: Optional[str] = None,
+        date_restrict: Optional[str] = None,
+        timing_recorder: Optional[TimingRecorder] = None,
+        reference_limit: Optional[int] = None,
+    ):
+        # Prefer keyword-focused query generated upstream when available.
+        effective_query = search_query.strip() if search_query else query
+
+        per_source_cap = per_source_limit if per_source_limit is not None else num_search_results
+        hits = self.search_client.search(
+            effective_query,
+            num_results=num_search_results,
+            per_source_limit=per_source_cap,
+            freshness=freshness,
+            date_restrict=date_restrict,
+        )
+        if timing_recorder:
+            timings_getter = getattr(self.search_client, "get_last_timings", None)
+            if callable(timings_getter):
+                timing_recorder.extend_search_timings(timings_getter())
+        search_warnings: List[str] = []
+        get_last_errors = getattr(self.search_client, "get_last_errors", None)
+        if callable(get_last_errors):
+            errors = get_last_errors() or []
+            if hits and errors:
+                for item in errors:
+                    source = str(item.get("source") or "搜索服务")
+                    detail = str(item.get("error") or "未知错误")
+                    if source.lower().startswith("mcp"):
+                        search_warnings.append(f"{source} 未正常工作，已使用其他搜索结果。原因：{detail}")
+                    else:
+                        search_warnings.append(f"{source} 出现异常：{detail}")
+        
+        hits, rerank_meta = self._apply_rerank(query, hits, limit=num_search_results)
+
+        # First, yield preliminary data
+        preliminary_data = {
+            "query": query,
+            "search_hits": [asdict(hit) for hit in hits],
+            "rerank": rerank_meta or None,
+            "search_query": effective_query,
+        }
+        if search_warnings:
+            preliminary_data["search_warnings"] = search_warnings
+        
+        yield json.dumps({"type": "preliminary", "data": preliminary_data})
+
+
+        user_prompt = self.build_prompt(query, hits)
+        response_start = time.perf_counter()
+        
+        # Stream the response
+        full_answer = ""
+        try:
+            stream = self.llm_client.chat_stream(
+                system_prompt=self.system_prompt,
+                user_prompt=user_prompt,
+                max_tokens=max_tokens,
+                temperature=temperature,
+            )
+            for chunk in stream:
+                if chunk.startswith("Error:"):
+                    yield json.dumps({"type": "error", "data": chunk})
+                    return
+                full_answer += chunk
+                yield json.dumps({"type": "content", "data": chunk})
+
+        finally:
+            if timing_recorder:
+                duration_ms = (time.perf_counter() - response_start) * 1000
+                timing_recorder.record_llm_call(
+                    label="search_answer_stream",
+                    duration_ms=duration_ms,
+                    provider=getattr(self.llm_client, "provider", None),
+                    model=getattr(self.llm_client, "model_id", None),
+                )
+
+        # Finally, yield the references
+        reference_hits = hits if reference_limit is None else hits[:reference_limit]
+        if full_answer and reference_hits:
+            reference_text = "\n\n**参考链接：**\n"
+            for idx, hit in enumerate(reference_hits, start=1):
+                url = hit.url or "No URL available."
+                title = hit.title or f"结果 {idx}"
+                reference_text += f"{idx}. [{title}]({url})\n"
+            yield json.dumps({"type": "references", "data": reference_text})
 
     def _apply_rerank(
         self,

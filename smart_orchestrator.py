@@ -92,6 +92,7 @@ class SmartSearchOrchestrator:
         max_tokens: int = 8000,
         temperature: float = 0.3,
         allow_search: bool = True,
+        reference_limit: Optional[int] = None,
     ) -> Dict[str, Any]:
         try:
             total_limit = max(1, int(num_search_results))
@@ -247,6 +248,8 @@ class SmartSearchOrchestrator:
                 pipeline_kwargs["freshness"] = time_constraint.you_freshness
             if time_constraint.google_date_restrict:
                 pipeline_kwargs["date_restrict"] = time_constraint.google_date_restrict
+            if reference_limit is not None:
+                pipeline_kwargs["reference_limit"] = reference_limit
 
         result = pipeline.answer(query, **pipeline_kwargs)
         control_payload = {
@@ -267,6 +270,8 @@ class SmartSearchOrchestrator:
             "search_total_limit": total_limit,
             "search_per_source_limit": per_source_limit,
         }
+        if reference_limit is not None:
+            control_payload["search_reference_limit"] = reference_limit
 
         # 添加时间约束信息到返回结果
         if time_constraint.days:

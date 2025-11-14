@@ -23,6 +23,7 @@ document.addEventListener("DOMContentLoaded", () => {
     const fileList = document.getElementById("file-list");
     const totalLimitInput = document.getElementById("search-total-limit");
     const perSourceLimitInput = document.getElementById("search-per-source-limit");
+    const referenceLimitInput = document.getElementById("search-reference-limit");
     const searchSourceCheckboxes = searchSourceMenu
         ? Array.from(searchSourceMenu.querySelectorAll('input[type="checkbox"]'))
         : [];
@@ -344,31 +345,48 @@ document.addEventListener("DOMContentLoaded", () => {
         if (perSourceLimitInput) {
             perSourceLimitInput.disabled = !enabled;
         }
+        if (referenceLimitInput) {
+            referenceLimitInput.disabled = !enabled;
+        }
     }
 
     function normalizeSearchLimits() {
-        if (!totalLimitInput || !perSourceLimitInput) return;
+        let total = 1;
+        if (totalLimitInput) {
+            total = parseInt(totalLimitInput.value, 10);
+            if (!Number.isFinite(total) || total < 1) {
+                total = 1;
+            }
+            if (total > 30) {
+                total = 30;
+            }
+            totalLimitInput.value = String(total);
+        }
 
-        let total = parseInt(totalLimitInput.value, 10);
-        if (!Number.isFinite(total) || total < 1) {
-            total = 1;
+        if (perSourceLimitInput) {
+            let perSource = parseInt(perSourceLimitInput.value, 10);
+            if (!Number.isFinite(perSource) || perSource < 1) {
+                perSource = 1;
+            }
+            if (perSource > 20) {
+                perSource = 20;
+            }
+            if (perSource > total) {
+                perSource = total;
+            }
+            perSourceLimitInput.value = String(perSource);
         }
-        if (total > 30) {
-            total = 30;
-        }
-        totalLimitInput.value = String(total);
 
-        let perSource = parseInt(perSourceLimitInput.value, 10);
-        if (!Number.isFinite(perSource) || perSource < 1) {
-            perSource = 1;
+        if (referenceLimitInput) {
+            let referenceLimit = parseInt(referenceLimitInput.value, 10);
+            if (!Number.isFinite(referenceLimit) || referenceLimit < 1) {
+                referenceLimit = 1;
+            }
+            if (referenceLimit > 20) {
+                referenceLimit = 20;
+            }
+            referenceLimitInput.value = String(referenceLimit);
         }
-        if (perSource > 20) {
-            perSource = 20;
-        }
-        if (perSource > total) {
-            perSource = total;
-        }
-        perSourceLimitInput.value = String(perSource);
     }
 
     async function loadAvailableModels() {
@@ -873,6 +891,10 @@ document.addEventListener("DOMContentLoaded", () => {
             controlFlags.appendChild(createBadge(`单源上限：${control.search_per_source_limit}`));
         }
 
+        if (typeof control.search_reference_limit === "number") {
+            controlFlags.appendChild(createBadge(`参考链接：${control.search_reference_limit}`));
+        }
+
         if (controlFlags.children.length > 0) {
             const wrapper = document.createElement("div");
             wrapper.className = "message-extras";
@@ -1057,6 +1079,12 @@ document.addEventListener("DOMContentLoaded", () => {
                 const perSourceValue = parseInt(perSourceLimitInput.value, 10);
                 if (Number.isFinite(perSourceValue) && perSourceValue > 0) {
                     payload.search_source_limit = perSourceValue;
+                }
+            }
+            if (referenceLimitInput) {
+                const referenceValue = parseInt(referenceLimitInput.value, 10);
+                if (Number.isFinite(referenceValue) && referenceValue > 0) {
+                    payload.search_reference_limit = referenceValue;
                 }
             }
         }
@@ -1260,6 +1288,10 @@ document.addEventListener("DOMContentLoaded", () => {
 
     if (perSourceLimitInput) {
         perSourceLimitInput.addEventListener("change", normalizeSearchLimits);
+    }
+
+    if (referenceLimitInput) {
+        referenceLimitInput.addEventListener("change", normalizeSearchLimits);
     }
 
     if (workflowPreviewToggle) {

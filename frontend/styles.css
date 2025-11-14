@@ -616,6 +616,7 @@ body {
     background: #cbd5f5;
     border-radius: 999px;
     transition: background 0.2s ease;
+    pointer-events: none;
 }
 
 .toggle-slider::after {

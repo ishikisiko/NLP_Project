@@ -238,6 +238,120 @@ class LLMClient:
 
         return {"content": content, "raw": data}
 
+    def chat_stream(
+        self,
+        system_prompt: str,
+        user_prompt: str,
+        max_tokens: int = 5000,
+        temperature: float = 0.7,
+        extra_messages: Optional[List[Dict[str, str]]] = None,
+    ) -> Dict[str, Any]:
+        """Chat method for OpenAI-compatible APIs with enhanced error handling."""
+        endpoint = f"{self.base_url}/chat/completions"
+        
+        # Build messages array
+        messages = [{"role": "system", "content": system_prompt}]
+        if extra_messages:
+            messages.extend(extra_messages)
+        messages.append({"role": "user", "content": user_prompt})
+
+        payload = {
+            "model": self.model_id,
+            "messages": messages,
+            "max_tokens": max_tokens,
+            "temperature": temperature,
+            "stream": True,
+        }
+
+        last_error = None
+        
+        for attempt in range(self.max_retries + 1):
+            try:
+                response = self.session.post(
+                    endpoint,
+                    headers=self.headers,
+                    json=payload,
+                    timeout=self.request_timeout,
+                    stream=True,
+                )
+                response.raise_for_status()
+                break
+                
+            except ConnectionError as exc:
+                last_error = exc
+                if "Connection aborted" in str(exc) or "RemoteDisconnected" in str(exc):
+                    error_msg = f"连接被远程服务器断开: {str(exc)}"
+                else:
+                    error_msg = f"网络连接错误: {str(exc)}"
+                error_msg = error_msg.encode('utf-8', errors='replace').decode('utf-8')
+                    
+                if attempt < self.max_retries:
+                    wait_time = self.backoff_factor * (2 ** attempt)
+                    try:
+                        print(f"网络连接失败，{wait_time}秒后重试 (尝试 {attempt + 1}/{self.max_retries + 1}): {error_msg}")
+                    except (UnicodeEncodeError, UnicodeDecodeError):
+                        pass
+                    time.sleep(wait_time)
+                else:
+                    yield f"Error: 经过 {self.max_retries + 1} 次重试后仍然失败: {error_msg}"
+                    return
+                    
+            except Timeout as exc:
+                last_error = exc
+                error_msg = f"请求超时 ({self.request_timeout}秒): {str(exc)}"
+                error_msg = error_msg.encode('utf-8', errors='replace').decode('utf-8')
+                
+                if attempt < self.max_retries:
+                    wait_time = self.backoff_factor * (2 ** attempt)
+                    try:
+                        print(f"请求超时，{wait_time}秒后重试 (尝试 {attempt + 1}/{self.max_retries + 1})")
+                    except (UnicodeEncodeError, UnicodeDecodeError):
+                        pass
+                    time.sleep(wait_time)
+                else:
+                    yield f"Error: 经过 {self.max_retries + 1} 次重试后仍然超时: {error_msg}"
+                    return
+                    
+            except RequestException as exc:
+                last_error = exc
+                error_msg = f"请求错误: {str(exc)}"
+                error_msg = error_msg.encode('utf-8', errors='replace').decode('utf-8')
+                
+                if attempt < self.max_retries:
+                    wait_time = self.backoff_factor * (2 ** attempt)
+                    try:
+                        print(f"请求失败，{wait_time}秒后重试 (尝试 {attempt + 1}/{self.max_retries + 1}): {error_msg}")
+                    except (UnicodeEncodeError, UnicodeDecodeError):
+                        pass
+                    time.sleep(wait_time)
+                else:
+                    yield f"Error: 经过 {self.max_retries + 1} 次重试后仍然失败: {error_msg}"
+                    return
+        else:
+            yield f"Error: 请求最终失败: {str(last_error)}"
+            return
+
+        try:
+            for line in response.iter_lines():
+                if line:
+                    decoded_line = line.decode('utf-8')
+                    if decoded_line.startswith('data: '):
+                        json_str = decoded_line[len('data: '):]
+                        if json_str.strip() == '[DONE]':
+                            break
+                        try:
+                            chunk = json.loads(json_str)
+                            delta = chunk.get("choices", [{}])[0].get("delta", {})
+                            content = delta.get("content", "")
+                            if content:
+                                yield content
+                        except json.JSONDecodeError:
+                            continue
+        except Exception as e:
+            yield f"Error: Failed to process stream: {str(e)}"
+
+
+
 
 class HKGAIClient(LLMClient):
     """Legacy wrapper for HKGAI service."""

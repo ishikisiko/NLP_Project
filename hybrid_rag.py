@@ -116,6 +116,7 @@ class HybridRAG:
         max_tokens: int = 5000,
         temperature: float = 0.3,
         enable_search: bool = True,
+        reference_limit: Optional[int] = None,
         freshness: Optional[str] = None,
         date_restrict: Optional[str] = None,
         timing_recorder: Optional[TimingRecorder] = None,
@@ -187,14 +188,14 @@ class HybridRAG:
                 )
 
         answer = response.get("content")
-        if answer:
-            if hits:
-                answer += "\n\n**Web Sources:**\n"
-                for idx, hit in enumerate(hits, start=1):
-                    title = hit.title or f"Result {idx}"
-                    url = hit.url or ""
-                    bullet = f"{idx}. [{title}]({url})" if url else f"{idx}. {title}"
-                    answer += f"{bullet}\n"
+        reference_hits = hits if reference_limit is None else hits[:reference_limit]
+        if answer and reference_hits:
+            answer += "\n\n**Web Sources:**\n"
+            for idx, hit in enumerate(reference_hits, start=1):
+                title = hit.title or f"Result {idx}"
+                url = hit.url or ""
+                bullet = f"{idx}. [{title}]({url})" if url else f"{idx}. {title}"
+                answer += f"{bullet}\n"
             if retrieved_docs:
                 answer += "\n\n**Local Sources:**\n"
                 for idx, doc in enumerate(retrieved_docs, start=1):
