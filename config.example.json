@@ -67,7 +67,7 @@
         "zai": {
             "api_key": "YOUR_ZAI_API_KEY_HERE",
             "model": "glm-4.6",
-            "base_url": "https://open.bigmodel.cn/api/coding/paas/v4",
+            "base_url": "https://open.bigmodel.cn/api/anthropic",
             "available_models": [
                 "glm-4.6",
                 "glm-4.5-air"
@@ -84,8 +84,12 @@
         },
         "minimax": {
             "api_key": "YOUR_MINIMAX_API_KEY_HERE",
-            "model": "minimax-m2:free",
-            "base_url": "https://api.minimax.chat/v1"
+            "model": "MiniMax-M2",
+            "base_url": "https://api.minimax.io/anthropic",
+            "available_models": [
+                "MiniMax-M2",
+                "MiniMax-M2-Stable"
+            ]
         }
     }
 }

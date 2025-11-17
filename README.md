@@ -53,7 +53,11 @@ This project demonstrates a simple Retrieval-Augmented Generation (RAG) pipeline
             "glm": {
                 "api_key": "YOUR_GLM_API_KEY_HERE",
                 "model": "glm-4.6",
-                "base_url": "https://open.bigmodel.cn/api/coding/paas/v4"
+                "base_url": "https://open.bigmodel.cn/api/anthropic"
+            Notes:
+            - `minimax` provider now points to Minimax's Anthropic-compatible endpoint at `https://api.minimax.io/anthropic` and the example model is `MiniMax-M2`.
+            - `zai` provider uses Anthropic-compatible URL `https://open.bigmodel.cn/api/anthropic` by default. The application detects Anthropic-compatible base_urls (containing `/anthropic`) and uses Anthropic-style headers and message endpoints.
+
             }
         },
         "rerank": {

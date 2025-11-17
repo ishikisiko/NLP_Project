@@ -15,6 +15,37 @@ from rerank import BaseReranker, Qwen3Reranker
 from smart_orchestrator import SmartSearchOrchestrator
 
 ZAI_DEFAULT_BASE_URL = "https://open.bigmodel.cn/api/paas/v4"
+ZAI_ANTHROPIC_DEFAULT_BASE_URL = "https://open.bigmodel.cn/api/anthropic"
+
+
+def _normalize_provider_base_url(provider: str, base_url: Optional[str]) -> Optional[str]:
+    """Apply provider-specific normalization for base URLs.
+    This function is intentionally defined near the top so it is available to
+    `build_llm_client` which is executed during startup.
+    """
+    if not base_url:
+        if provider == "zai":
+            return ZAI_ANTHROPIC_DEFAULT_BASE_URL
+        return base_url
+
+    cleaned = str(base_url).strip()
+    if not cleaned:
+        return ZAI_ANTHROPIC_DEFAULT_BASE_URL if provider == "zai" else cleaned
+
+    cleaned = cleaned.rstrip("/")
+
+    if provider == "zai":
+        # If the URL already points to an Anthropic-compatible base, preserve it
+        if "/anthropic" in cleaned:
+            return cleaned
+        # Convert older coding/paas base to paas, but keep /anthropic paths alone
+        if "/coding/paas" in cleaned:
+            cleaned = cleaned.replace("/coding/paas", "/paas")
+        if not cleaned.endswith("/v4"):
+            cleaned = cleaned.rstrip("/") + "/v4" if cleaned.endswith("/paas") else cleaned
+        return cleaned
+
+    return cleaned
 
 
 def build_search_client(
@@ -674,24 +705,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-def _normalize_provider_base_url(provider: str, base_url: Optional[str]) -> Optional[str]:
-    """Apply provider-specific normalization for base URLs."""
-    if not base_url:
-        if provider == "zai":
-            return ZAI_DEFAULT_BASE_URL
-        return base_url
-
-    cleaned = str(base_url).strip()
-    if not cleaned:
-        return ZAI_DEFAULT_BASE_URL if provider == "zai" else cleaned
-
-    cleaned = cleaned.rstrip("/")
-
-    if provider == "zai":
-        if "/coding/paas" in cleaned:
-            cleaned = cleaned.replace("/coding/paas", "/paas")
-        if not cleaned.endswith("/v4"):
-            cleaned = cleaned.rstrip("/") + "/v4" if cleaned.endswith("/paas") else cleaned
-        return cleaned
-
-    return cleaned

@@ -29,6 +29,13 @@ class LLMClient:
         self.provider = provider
         self.max_retries = max_retries
         self.backoff_factor = backoff_factor
+        # Detect Anthropic-compatible endpoint (Minimax & other IB provider endpoints)
+        self.anthropic_compatible = False
+        try:
+            if isinstance(self.base_url, str) and "/anthropic" in self.base_url:
+                self.anthropic_compatible = True
+        except Exception:
+            self.anthropic_compatible = False
         
         if not self.api_key:
             raise ValueError(f"{provider.upper()}_API_KEY must be provided.")
@@ -38,14 +45,20 @@ class LLMClient:
             "Content-Type": "application/json",
         }
         
-        if provider == "openai":
+        if self.anthropic_compatible:
+            # Use x-api-key and Anthropic-style headers
+            self.headers["x-api-key"] = self.api_key
+            # Some Anthropic-compatible providers require an explicit version header
+            self.headers["anthropic-version"] = "2023-06-01"
+        elif provider == "openai":
             self.headers["Authorization"] = f"Bearer {self.api_key}"
         elif provider == "anthropic":
+            # Anthropic provider should also use x-api-key and anthopic-version header
             self.headers["x-api-key"] = self.api_key
             self.headers["anthropic-version"] = "2023-06-01"
         elif provider == "google":
             self.headers["Authorization"] = f"Bearer {self.api_key}"
-        elif provider in ("glm", "zai"):
+        elif provider in ("glm", "zai") and not self.anthropic_compatible:
             self.headers["Authorization"] = f"Bearer {self.api_key}"
         elif provider == "openrouter":
             self.headers["Authorization"] = f"Bearer {self.api_key}"
@@ -53,7 +66,12 @@ class LLMClient:
             # OpenRouter requires ASCII-safe header values; keep title simple to avoid encoding issues
             self.headers["X-Title"] = "Intelligent QA Assistant"
         elif provider == "minimax":
-            self.headers["Authorization"] = f"Bearer {self.api_key}"
+            # MiniMax uses x-api-key for Anthropic-compatible endpoint
+            if self.anthropic_compatible:
+                self.headers["x-api-key"] = self.api_key
+                self.headers["anthropic-version"] = "2023-06-01"
+            else:
+                self.headers["Authorization"] = f"Bearer {self.api_key}"
         else:
             # Default to Bearer token
             self.headers["Authorization"] = f"Bearer {self.api_key}"
@@ -80,6 +98,8 @@ class LLMClient:
     ) -> Dict[str, Any]:
         """Chat method for OpenAI-compatible APIs with enhanced error handling."""
         endpoint = f"{self.base_url}/chat/completions"
+        if self.anthropic_compatible:
+            endpoint = f"{self.base_url}/messages"
         
         # Build messages array
         messages = [{"role": "system", "content": system_prompt}]
@@ -95,8 +115,41 @@ class LLMClient:
         }
 
         # GLM/Zai-specific adjustments
-        if self.provider in ("glm", "zai"):
+        if self.provider in ("glm", "zai") and not self.anthropic_compatible:
             payload["stream"] = False
+
+        # For Anthropic-compatible endpoints, convert messages to the expected block format
+        if self.anthropic_compatible:
+            # Extract system message and convert user/assistant messages
+            system_msg = None
+            anthro_msgs = []
+            for m in messages:
+                role = m.get("role") if isinstance(m, dict) else "user"
+                text_content = m.get("content") if isinstance(m, dict) else m
+                
+                # Handle system message separately
+                if role == "system":
+                    if isinstance(text_content, str):
+                        system_msg = text_content
+                    continue
+                
+                # Convert content to block format
+                if isinstance(text_content, str):
+                    content_blocks = [{"type": "text", "text": text_content}]
+                elif isinstance(text_content, list):
+                    content_blocks = text_content
+                else:
+                    content_blocks = [{"type": "text", "text": str(text_content)}]
+                
+                anthro_msgs.append({"role": role, "content": content_blocks})
+            
+            payload["messages"] = anthro_msgs
+            # Add system as a separate field
+            if system_msg:
+                payload["system"] = system_msg
+            # Remove messages from payload since we're using the Anthropic format
+            if "messages" in payload and not anthro_msgs:
+                del payload["messages"]
 
         last_error = None
         
@@ -167,6 +220,7 @@ class LLMClient:
         except json.JSONDecodeError as exc:
             return {"error": f"响应JSON解析失败: {str(exc)}".encode('utf-8', errors='replace').decode('utf-8')}
 
+        # Helper to coerce different response shapes to plain text
         def _coerce_content(value: Any) -> str:
             if isinstance(value, str):
                 return value.strip()
@@ -188,6 +242,26 @@ class LLMClient:
 
         content = ""
         try:
+            # Anthropic-style response handling
+            if self.anthropic_compatible:
+                # Try to find content blocks
+                content_blocks = None
+                if isinstance(data, dict):
+                    # Minimax may return message.content
+                    msg = data.get("message") or data
+                    content_blocks = msg.get("content") if isinstance(msg, dict) else None
+                if content_blocks:
+                    pieces = []
+                    for block in content_blocks:
+                        if isinstance(block, dict):
+                            text = block.get("text") or block.get("content") or block.get("thinking")
+                            if isinstance(text, str):
+                                pieces.append(text)
+                    content = "\n".join(pieces).strip()
+                    # fallback to previous parsing
+                    if content:
+                        pass
+            # Standard OpenAI-like response handling if not set
             choices = data.get("choices", [])
             if choices:
                 first = choices[0] if isinstance(choices[0], dict) else {}
@@ -248,6 +322,8 @@ class LLMClient:
     ) -> Dict[str, Any]:
         """Chat method for OpenAI-compatible APIs with enhanced error handling."""
         endpoint = f"{self.base_url}/chat/completions"
+        if self.anthropic_compatible:
+            endpoint = f"{self.base_url}/messages"
         
         # Build messages array
         messages = [{"role": "system", "content": system_prompt}]
@@ -341,10 +417,31 @@ class LLMClient:
                             break
                         try:
                             chunk = json.loads(json_str)
-                            delta = chunk.get("choices", [{}])[0].get("delta", {})
-                            content = delta.get("content", "")
-                            if content:
-                                yield content
+                            if self.anthropic_compatible:
+                                # Minimax/Athropic style streaming: look for content deltas
+                                # chunk may have 'content', 'type', or nested message
+                                # Example: {"type":"content_block_delta", "delta": {"type": "text_delta", "text": "..."}}
+                                delta = chunk.get("delta") or chunk.get("delta", {})
+                                # Try to find text fields in the delta
+                                text = None
+                                if isinstance(chunk, dict):
+                                    if chunk.get("type") == "content_block_delta":
+                                        delta = chunk.get("delta") or {}
+                                        if isinstance(delta, dict):
+                                            text = delta.get("text") or delta.get("thinking") or delta.get("content")
+                                    else:
+                                        # nested structure used by other implementations
+                                        msg = chunk.get("message") or {}
+                                        inner = msg.get("delta") or {}
+                                        text = inner.get("text") if isinstance(inner, dict) else None
+                                if text:
+                                    yield text
+                                continue
+                            else:
+                                delta = chunk.get("choices", [{}])[0].get("delta", {})
+                                content = delta.get("content", "")
+                                if content:
+                                    yield content
                         except json.JSONDecodeError:
                             continue
         except Exception as e:
