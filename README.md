@@ -100,6 +100,28 @@ This project demonstrates a simple Retrieval-Augmented Generation (RAG) pipeline
 - **Google Gemini**: Set `LLM_PROVIDER` to `"google"` and provide your Google API key
 - **GLM (智谱AI)**: Set `LLM_PROVIDER` to `"glm"` and provide your GLM API key. Supports GLM-4.6 and other models. (Default)
 - **HKGAI**: Set `LLM_PROVIDER` to `"hkgai"` and provide your HKGAI API key
+- **MiniMax**: Set `LLM_PROVIDER` to `"minimax"` and provide your MiniMax API key. Supports MiniMax-M2 model with thinking mode.
+
+#### MiniMax Thinking Mode
+
+MiniMax M2 model supports a **thinking mode** that allows the model to show its reasoning process. You can configure this in `config.json`:
+
+```json
+"minimax": {
+    "api_key": "YOUR_MINIMAX_API_KEY_HERE",
+    "model": "MiniMax-M2",
+    "base_url": "https://api.minimaxi.com/anthropic/v1",
+    "thinking": {
+        "enabled": true,
+        "display_in_response": false
+    }
+}
+```
+
+- `thinking.enabled`: (boolean) Enable/disable the thinking mode. When `true`, the model will generate reasoning process internally.
+- `thinking.display_in_response`: (boolean) When `true`, the thinking process will be included in the response text prefixed with `[思考过程]`. When `false`, only the final answer is returned.
+
+**Note**: Thinking mode is only available for MiniMax M2 model via the Anthropic-compatible API endpoint.
 
 ### Required Configuration
 

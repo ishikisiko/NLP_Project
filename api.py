@@ -20,7 +20,9 @@ class LLMClient:
         request_timeout: int = 60,
         provider: str = "openai",
         max_retries: int = 3,
-        backoff_factor: float = 1.0
+        backoff_factor: float = 1.0,
+        thinking_enabled: bool = False,
+        display_thinking: bool = False
     ) -> None:
         self.api_key = api_key
         self.model_id = model_id
@@ -29,6 +31,8 @@ class LLMClient:
         self.provider = provider
         self.max_retries = max_retries
         self.backoff_factor = backoff_factor
+        self.thinking_enabled = thinking_enabled
+        self.display_thinking = display_thinking
         # Detect Anthropic-compatible endpoint (Minimax & other IB provider endpoints)
         self.anthropic_compatible = False
         try:
@@ -150,6 +154,10 @@ class LLMClient:
             # Remove messages from payload since we're using the Anthropic format
             if "messages" in payload and not anthro_msgs:
                 del payload["messages"]
+            
+            # Add thinking parameter for MiniMax if enabled
+            if self.thinking_enabled:
+                payload["thinking"] = {"type": "enabled", "budget_tokens": 10000}
 
         last_error = None
         
@@ -241,6 +249,7 @@ class LLMClient:
             return ""
 
         content = ""
+        thinking_content = ""
         try:
             # Anthropic-style response handling
             if self.anthropic_compatible:
@@ -251,13 +260,32 @@ class LLMClient:
                     msg = data.get("message") or data
                     content_blocks = msg.get("content") if isinstance(msg, dict) else None
                 if content_blocks:
-                    pieces = []
+                    text_pieces = []
+                    thinking_pieces = []
                     for block in content_blocks:
                         if isinstance(block, dict):
-                            text = block.get("text") or block.get("content") or block.get("thinking")
-                            if isinstance(text, str):
-                                pieces.append(text)
-                    content = "\n".join(pieces).strip()
+                            block_type = block.get("type")
+                            if block_type == "thinking":
+                                thinking_text = block.get("thinking")
+                                if isinstance(thinking_text, str):
+                                    thinking_pieces.append(thinking_text)
+                            elif block_type == "text":
+                                text = block.get("text")
+                                if isinstance(text, str):
+                                    text_pieces.append(text)
+                            else:
+                                # Fallback for other block types
+                                text = block.get("text") or block.get("content")
+                                if isinstance(text, str):
+                                    text_pieces.append(text)
+                    
+                    thinking_content = "\n".join(thinking_pieces).strip()
+                    content = "\n".join(text_pieces).strip()
+                    
+                    # If display_thinking is enabled, prepend thinking to content
+                    if self.display_thinking and thinking_content:
+                        content = f"[思考过程]\n{thinking_content}\n\n[回答]\n{content}"
+                    
                     # fallback to previous parsing
                     if content:
                         pass

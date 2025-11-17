@@ -416,6 +416,11 @@ def build_llm_client(
     provider_max_retries = provider_config.get("max_retries", max_retries)
     provider_backoff_factor = provider_config.get("backoff_factor", backoff_factor)
     
+    # Thinking configuration (for MiniMax and other Anthropic-compatible endpoints)
+    thinking_config = provider_config.get("thinking", {})
+    thinking_enabled = thinking_config.get("enabled", False) if isinstance(thinking_config, dict) else False
+    display_thinking = thinking_config.get("display_in_response", False) if isinstance(thinking_config, dict) else False
+    
     return LLMClient(
         api_key=provider_config.get("api_key"),
         model_id=final_model_id,
@@ -423,7 +428,9 @@ def build_llm_client(
         request_timeout=provider_timeout,
         provider=provider,
         max_retries=provider_max_retries,
-        backoff_factor=provider_backoff_factor
+        backoff_factor=provider_backoff_factor,
+        thinking_enabled=thinking_enabled,
+        display_thinking=display_thinking
     )
 
 

@@ -98,6 +98,40 @@
                         </div>
                     </div>
 
+                    <div class="control-field toggle-field">
+                        <span>显示时间详情</span>
+                        <div class="toggle-group">
+                            <div class="toggle">
+                                <input type="checkbox" id="timing-toggle" name="timing" checked>
+                                <span class="toggle-slider" aria-hidden="true"></span>
+                            </div>
+                            <div class="timing-dropdown hidden" id="timing-dropdown">
+                                <button
+                                    type="button"
+                                    id="timing-button"
+                                    class="timing-button"
+                                    aria-haspopup="true"
+                                    aria-expanded="false"
+                                    aria-controls="timing-menu"
+                                >时间详情</button>
+                                <div class="timing-menu" id="timing-menu" role="menu">
+                                    <label class="timing-option" for="timing-show-total">
+                                        <input type="checkbox" id="timing-show-total" value="total" checked>
+                                        <span>总体响应时间</span>
+                                    </label>
+                                    <label class="timing-option" for="timing-show-search">
+                                        <input type="checkbox" id="timing-show-search" value="search" checked>
+                                        <span>搜索源详情</span>
+                                    </label>
+                                    <label class="timing-option" for="timing-show-llm">
+                                        <input type="checkbox" id="timing-show-llm" value="llm" checked>
+                                        <span>LLM调用详情</span>
+                                    </label>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+
                         <label class="control-field">
                             <span>汇总结果上限</span>
                             <input

@@ -28,9 +28,18 @@ document.addEventListener("DOMContentLoaded", () => {
         ? Array.from(searchSourceMenu.querySelectorAll('input[type="checkbox"]'))
         : [];
 
+    const timingToggle = document.getElementById("timing-toggle");
+    const timingDropdown = document.getElementById("timing-dropdown");
+    const timingButton = document.getElementById("timing-button");
+    const timingMenu = document.getElementById("timing-menu");
+    const timingCheckboxes = timingMenu
+        ? Array.from(timingMenu.querySelectorAll('input[type="checkbox"]'))
+        : [];
+
     const state = {
         loading: false,
         searchSources: new Set(),
+        timingOptions: new Set(['total', 'search', 'llm']), // 默认全部显示
     };
 
     const workflowPanel = document.getElementById("workflow-panel");
@@ -348,6 +357,79 @@ document.addEventListener("DOMContentLoaded", () => {
         if (referenceLimitInput) {
             referenceLimitInput.disabled = !enabled;
         }
+    }
+
+    function refreshTimingButtonLabel() {
+        if (!timingButton) return;
+        const count = state.timingOptions.size;
+        timingButton.textContent = count === timingCheckboxes.length
+            ? "时间详情"
+            : `时间详情 (${count})`;
+    }
+
+    function closeTimingMenu() {
+        if (!timingDropdown) return;
+        timingDropdown.classList.remove("open");
+        if (timingButton) {
+            timingButton.setAttribute("aria-expanded", "false");
+        }
+    }
+
+    function openTimingMenu() {
+        if (!timingDropdown) return;
+        timingDropdown.classList.add("open");
+        if (timingButton) {
+            timingButton.setAttribute("aria-expanded", "true");
+        }
+    }
+
+    function toggleTimingMenu() {
+        if (!timingDropdown) return;
+        if (timingDropdown.classList.contains("open")) {
+            closeTimingMenu();
+        } else {
+            openTimingMenu();
+        }
+    }
+
+    function updateTimingVisibility() {
+        const shouldShow = timingToggle.checked;
+        if (timingDropdown) {
+            timingDropdown.classList.toggle("hidden", !shouldShow);
+            if (!shouldShow) {
+                closeTimingMenu();
+            }
+        }
+    }
+
+    function initializeTimingOptions() {
+        if (!timingCheckboxes.length) return;
+        state.timingOptions.clear();
+        for (const checkbox of timingCheckboxes) {
+            if (checkbox.checked) {
+                state.timingOptions.add(checkbox.value);
+            }
+        }
+        refreshTimingButtonLabel();
+    }
+
+    function handleTimingChange(event) {
+        const checkbox = event.target;
+        if (!checkbox || !checkbox.value) return;
+        const value = checkbox.value;
+
+        if (checkbox.checked) {
+            state.timingOptions.add(value);
+        } else {
+            const hasValue = state.timingOptions.has(value);
+            if (hasValue && state.timingOptions.size === 1) {
+                checkbox.checked = true;
+                statusMessage.textContent = "至少选择一个时间选项";
+                return;
+            }
+            state.timingOptions.delete(value);
+        }
+        refreshTimingButtonLabel();
     }
 
     function normalizeSearchLimits() {
@@ -699,15 +781,16 @@ document.addEventListener("DOMContentLoaded", () => {
         heading.textContent = "响应时间";
         wrapper.appendChild(heading);
 
-        if (hasTotal) {
+        // 根据用户选择显示不同的时间信息
+        if (hasTotal && state.timingOptions.has('total')) {
             const totalRow = document.createElement("div");
             totalRow.className = "timing-total";
             totalRow.textContent = `总体: ${timings.total_ms.toFixed(2)} ms`;
             wrapper.appendChild(totalRow);
         }
 
-        const renderSection = (title, entries) => {
-            if (!entries.length) return;
+        const renderSection = (title, entries, option) => {
+            if (!entries.length || !state.timingOptions.has(option)) return;
             const section = document.createElement("div");
             section.className = "timing-section";
             const sectionTitle = document.createElement("strong");
@@ -742,7 +825,7 @@ document.addEventListener("DOMContentLoaded", () => {
             wrapper.appendChild(section);
         };
 
-        renderSection("搜索源", searchSources);
+        renderSection("搜索源", searchSources, 'search');
         const normalizedLLM = llmCalls.map((entry) => {
             const provider = entry.provider || "";
             const model = entry.model || "";
@@ -752,7 +835,7 @@ document.addEventListener("DOMContentLoaded", () => {
                 label: suffix ? `${entry.label || "LLM"}（${suffix}）` : entry.label || "LLM",
             };
         });
-        renderSection("LLM 调用", normalizedLLM);
+        renderSection("LLM 调用", normalizedLLM, 'llm');
 
         return wrapper;
     }
@@ -1264,10 +1347,29 @@ document.addEventListener("DOMContentLoaded", () => {
         checkbox.addEventListener("change", handleSearchSourceChange);
     }
 
+    if (timingButton) {
+        timingButton.addEventListener("click", (event) => {
+            event.stopPropagation();
+            if (!timingToggle.checked) return;
+            toggleTimingMenu();
+        });
+    }
+
+    for (const checkbox of timingCheckboxes) {
+        checkbox.addEventListener("change", handleTimingChange);
+    }
+
     document.addEventListener("click", (event) => {
         if (!searchSourceDropdown) return;
         if (!searchSourceDropdown.contains(event.target)) {
             closeSearchSourceMenu();
+        }
+    });
+
+    document.addEventListener("click", (event) => {
+        if (!timingDropdown) return;
+        if (!timingDropdown.contains(event.target)) {
+            closeTimingMenu();
         }
     });
 
@@ -1279,6 +1381,15 @@ document.addEventListener("DOMContentLoaded", () => {
         } else {
             disableWorkflowSearchStage();
             statusMessage.textContent = "联网搜索已关闭";
+        }
+    });
+
+    timingToggle.addEventListener("change", () => {
+        updateTimingVisibility();
+        if (timingToggle.checked) {
+            statusMessage.textContent = "时间详情已启用";
+        } else {
+            statusMessage.textContent = "时间详情已关闭";
         }
     });
 
@@ -1305,7 +1416,9 @@ document.addEventListener("DOMContentLoaded", () => {
     loadAvailableModels();
     autoResize();
     initializeSearchSources();
+    initializeTimingOptions();
     updateSearchSourceVisibility();
+    updateTimingVisibility();
     normalizeSearchLimits();
     resetWorkflowPanel();
 });

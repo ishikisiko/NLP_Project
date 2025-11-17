@@ -85,7 +85,11 @@
         "minimax": {
             "api_key": "YOUR_MINIMAX_API_KEY_HERE",
             "model": "MiniMax-M2",
-            "base_url": "https://api.minimax.io/anthropic",
+            "base_url": "https://api.minimaxi.com/anthropic/v1",
+            "thinking": {
+                "enabled": true,
+                "display_in_response": false
+            },
             "available_models": [
                 "MiniMax-M2",
                 "MiniMax-M2-Stable"
