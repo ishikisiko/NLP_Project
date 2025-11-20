@@ -15,6 +15,37 @@ from rerank import BaseReranker, Qwen3Reranker
 from smart_orchestrator import SmartSearchOrchestrator
 
 ZAI_DEFAULT_BASE_URL = "https://open.bigmodel.cn/api/paas/v4"
+ZAI_ANTHROPIC_DEFAULT_BASE_URL = "https://open.bigmodel.cn/api/anthropic"
+
+
+def _normalize_provider_base_url(provider: str, base_url: Optional[str]) -> Optional[str]:
+    """Apply provider-specific normalization for base URLs.
+    This function is intentionally defined near the top so it is available to
+    `build_llm_client` which is executed during startup.
+    """
+    if not base_url:
+        if provider == "zai":
+            return ZAI_ANTHROPIC_DEFAULT_BASE_URL
+        return base_url
+
+    cleaned = str(base_url).strip()
+    if not cleaned:
+        return ZAI_ANTHROPIC_DEFAULT_BASE_URL if provider == "zai" else cleaned
+
+    cleaned = cleaned.rstrip("/")
+
+    if provider == "zai":
+        # If the URL already points to an Anthropic-compatible base, preserve it
+        if "/anthropic" in cleaned:
+            return cleaned
+        # Convert older coding/paas base to paas, but keep /anthropic paths alone
+        if "/coding/paas" in cleaned:
+            cleaned = cleaned.replace("/coding/paas", "/paas")
+        if not cleaned.endswith("/v4"):
+            cleaned = cleaned.rstrip("/") + "/v4" if cleaned.endswith("/paas") else cleaned
+        return cleaned
+
+    return cleaned
 
 
 def build_search_client(
@@ -385,6 +416,11 @@ def build_llm_client(
     provider_max_retries = provider_config.get("max_retries", max_retries)
     provider_backoff_factor = provider_config.get("backoff_factor", backoff_factor)
     
+    # Thinking configuration (for MiniMax and other Anthropic-compatible endpoints)
+    thinking_config = provider_config.get("thinking", {})
+    thinking_enabled = thinking_config.get("enabled", False) if isinstance(thinking_config, dict) else False
+    display_thinking = thinking_config.get("display_in_response", False) if isinstance(thinking_config, dict) else False
+    
     return LLMClient(
         api_key=provider_config.get("api_key"),
         model_id=final_model_id,
@@ -392,7 +428,9 @@ def build_llm_client(
         request_timeout=provider_timeout,
         provider=provider,
         max_retries=provider_max_retries,
-        backoff_factor=provider_backoff_factor
+        backoff_factor=provider_backoff_factor,
+        thinking_enabled=thinking_enabled,
+        display_thinking=display_thinking
     )
 
 
@@ -675,24 +713,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-def _normalize_provider_base_url(provider: str, base_url: Optional[str]) -> Optional[str]:
-    """Apply provider-specific normalization for base URLs."""
-    if not base_url:
-        if provider == "zai":
-            return ZAI_DEFAULT_BASE_URL
-        return base_url
-
-    cleaned = str(base_url).strip()
-    if not cleaned:
-        return ZAI_DEFAULT_BASE_URL if provider == "zai" else cleaned
-
-    cleaned = cleaned.rstrip("/")
-
-    if provider == "zai":
-        if "/coding/paas" in cleaned:
-            cleaned = cleaned.replace("/coding/paas", "/paas")
-        if not cleaned.endswith("/v4"):
-            cleaned = cleaned.rstrip("/") + "/v4" if cleaned.endswith("/paas") else cleaned
-        return cleaned
-
-    return cleaned

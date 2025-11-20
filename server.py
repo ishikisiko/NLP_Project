@@ -366,10 +366,16 @@ def answer() -> Any:
             raise ValueError(f"'{field}' must be a positive integer.")
         return parsed
 
+    reference_limit: Optional[int] = None
+    search_reference_value = payload.get("search_reference_limit")
+    fallback_display_value = payload.get("search_source_display_limit")
     try:
         legacy_num = _coerce_positive_int(payload.get("num_results"), "num_results")
         total_limit = _coerce_positive_int(payload.get("search_total_limit"), "search_total_limit")
         per_source_limit = _coerce_positive_int(payload.get("search_source_limit"), "search_source_limit")
+        reference_limit = _coerce_positive_int(search_reference_value, "search_reference_limit")
+        if reference_limit is None and fallback_display_value is not None:
+            reference_limit = _coerce_positive_int(fallback_display_value, "search_source_display_limit")
     except ValueError as exc:
         return jsonify({"error": str(exc)}), 400
 
@@ -390,6 +396,7 @@ def answer() -> Any:
             max_tokens=int(payload.get("max_tokens")) if payload.get("max_tokens") else 5000,
             temperature=float(payload.get("temperature")) if payload.get("temperature") else 0.3,
             allow_search=allow_search,
+            reference_limit=reference_limit,
         )
         print(f"[server] Pipeline returned result with keys: {list(result.keys()) if isinstance(result, dict) else type(result)}")
     except Exception as exc:  # pragma: no cover - propagate runtime issues
@@ -411,6 +418,13 @@ def answer() -> Any:
     # Log answer length
     answer_len = len(result.get("answer", "")) if isinstance(result.get("answer"), str) else 0
     print(f"[server] Answer length: {answer_len} chars")
+
+    if reference_limit is not None:
+        control = result.get("control")
+        if not isinstance(control, dict):
+            control = {}
+            result["control"] = control
+        control["search_reference_limit"] = reference_limit
     
     # Ensure all values are JSON serializable
     try:
