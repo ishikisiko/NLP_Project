@@ -234,6 +234,7 @@ def build_pipeline(
         missing_search_sources=missing_sources,
         configured_search_sources=configured_sources,
         show_timings=show_timings,
+        google_api_key=google_key,
     )
 
 

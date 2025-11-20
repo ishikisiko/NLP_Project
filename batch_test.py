@@ -5,8 +5,10 @@ import re
 from datetime import datetime
 from typing import List, Optional, Dict, Any
 
-from main import build_llm_client, build_search_client, build_reranker, build_domain_classifier_client
+from main import build_llm_client, build_search_client, build_reranker, build_domain_classifier_client, build_routing_keywords_client
 from smart_orchestrator import SmartSearchOrchestrator
+from time_parser import parse_time_constraint
+from timing_utils import TimingRecorder
 
 
 def resolve_model_to_provider(model_or_provider: str, config: Dict[str, Any]) -> str:
@@ -101,6 +103,11 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="Save all results to a single JSON file instead of separate files per query.",
     )
+    parser.add_argument(
+        "--show-timings",
+        action="store_true",
+        help="Display response timing details for each query.",
+    )
     return parser.parse_args()
 
 
@@ -173,6 +180,7 @@ def main() -> None:
 
     llm_client = build_llm_client(config)
     classifier_client = build_domain_classifier_client(config)
+    routing_client = build_routing_keywords_client(config)
     allow_search = args.search == "on"
 
     reranker = None
@@ -182,6 +190,7 @@ def main() -> None:
 
     min_rerank_score = float(rerank_config.get("min_score", 0.0))
     max_per_domain = max(1, int(rerank_config.get("max_per_domain", 1)))
+    show_timings = bool(config.get("displayResponseTimes", False) or args.show_timings)
 
     search_client = None
     requested_sources: List[str] = []
@@ -199,6 +208,11 @@ def main() -> None:
         (mcp_cfg_batch.get("headers") or {}).get(token) for token in ("Authorization", "authorization")
     ):
         configured_sources.append("mcp")
+    google_cfg_batch = config.get("googleSearch") or {}
+    google_key_batch = (google_cfg_batch.get("api_key") or config.get("GOOGLE_API_KEY") or "").strip()
+    google_cx_batch = (google_cfg_batch.get("cx") or config.get("GOOGLE_CX") or "").strip()
+    if google_key_batch and google_cx_batch:
+        configured_sources.append("google")
     if allow_search:
         search_client = build_search_client(config)
         if search_client:
@@ -211,6 +225,7 @@ def main() -> None:
     orchestrator = SmartSearchOrchestrator(
         llm_client=llm_client,
         classifier_llm_client=classifier_client,
+        routing_llm_client=routing_client,
         search_client=search_client,
         data_path=args.data_path,
         reranker=reranker,
@@ -221,6 +236,8 @@ def main() -> None:
         active_search_source_labels=active_labels,
         missing_search_sources=missing_sources,
         configured_search_sources=configured_sources,
+        show_timings=show_timings,
+        google_api_key=google_key_batch,
     )
 
     print(f"Loaded {len(queries)} queries from {args.queries_file}")
@@ -282,6 +299,47 @@ def main() -> None:
                 print(f"Decision reason: {decision}")
             if mode:
                 print(f"Mode: {mode}")
+            
+            # 显示时间信息（如果启用）
+            timings = result.get("response_times")
+            if show_timings and isinstance(timings, dict):
+                print("\n[响应时间]")
+                total_ms = timings.get("total_ms")
+                if isinstance(total_ms, (int, float)):
+                    print(f"- 总耗时: {total_ms:.2f} ms")
+                search_timings = timings.get("search_sources") or []
+                for entry in search_timings:
+                    label = entry.get("label") or entry.get("source") or "Search"
+                    duration = entry.get("duration_ms")
+                    try:
+                        duration_val = float(duration)
+                    except (TypeError, ValueError):
+                        duration_val = None
+                    detail = f"{label}"
+                    if entry.get("error"):
+                        detail += f"（错误: {entry['error']}）"
+                    if duration_val is not None:
+                        print(f"- 搜索源[{detail}]: {duration_val:.2f} ms")
+                    else:
+                        print(f"- 搜索源[{detail}]")
+                llm_timings = timings.get("llm_calls") or []
+                for entry in llm_timings:
+                    label = entry.get("label") or "LLM"
+                    duration = entry.get("duration_ms")
+                    try:
+                        duration_val = float(duration)
+                    except (TypeError, ValueError):
+                        duration_val = None
+                    provider = entry.get("provider")
+                    model = entry.get("model")
+                    provider_info = ""
+                    if provider or model:
+                        provider_info = f"（{provider or ''}{'/' if provider and model else ''}{model or ''}）"
+                    if duration_val is not None:
+                        print(f"- LLM[{label}]{provider_info}: {duration_val:.2f} ms")
+                    else:
+                        print(f"- LLM[{label}]{provider_info}")
+            
             warnings = result.get("search_warnings")
             if warnings:
                 if isinstance(warnings, list):

@@ -52,6 +52,7 @@ class SmartSearchOrchestrator:
         missing_search_sources: Optional[List[str]] = None,
         configured_search_sources: Optional[List[str]] = None,
         show_timings: bool = False,
+        google_api_key: Optional[str] = None,
     ) -> None:
         self.llm_client = llm_client
         self.classifier_llm_client = classifier_llm_client
@@ -70,6 +71,7 @@ class SmartSearchOrchestrator:
         self.source_selector = IntelligentSourceSelector(
             llm_client=selector_client,
             use_llm=selector_client is not None,
+            google_api_key=google_api_key,
         )
         self.requested_search_sources = self._normalize_sources(requested_search_sources)
         raw_active_sources = active_search_sources or getattr(search_client, "active_sources", [])
@@ -148,6 +150,25 @@ class SmartSearchOrchestrator:
         # 在决策之前先进行领域分类（使用清理后的查询）
         domain, sources = self.source_selector.select_sources(effective_query, timing_recorder=timing_recorder)
         enhanced_query = self.source_selector.generate_domain_specific_query(effective_query, domain)
+
+        domain_api_result = self.source_selector.fetch_domain_data(
+            effective_query,
+            domain,
+            timing_recorder=timing_recorder,
+        )
+        if domain_api_result and domain_api_result.get("answer"):
+            return self._finalize_with_timings(
+                self._domain_api_answer(
+                    query=query,
+                    domain=domain,
+                    sources=sources,
+                    enhanced_query=enhanced_query,
+                    domain_api_result=domain_api_result,
+                    has_docs=has_docs,
+                    allow_search=allow_search,
+                ),
+                timing_recorder,
+            )
 
         decision = self._decide(effective_query, timing_recorder=timing_recorder)
         decision_meta = {
@@ -267,6 +288,20 @@ class SmartSearchOrchestrator:
             "search_total_limit": total_limit,
             "search_per_source_limit": per_source_limit,
         }
+        if domain_api_result:
+            control_payload["domain_api"] = self._summarize_domain_api(domain_api_result)
+            if domain_api_result.get("error"):
+                domain_warning = f"领域API调用失败：{domain_api_result['error']}"
+                existing_warnings = result.get("search_warnings")
+                if isinstance(existing_warnings, list):
+                    warnings = existing_warnings
+                elif existing_warnings:
+                    warnings = [existing_warnings]
+                else:
+                    warnings = []
+                if domain_warning not in warnings:
+                    warnings.append(domain_warning)
+                result["search_warnings"] = warnings
 
         # 添加时间约束信息到返回结果
         if time_constraint.days:
@@ -395,6 +430,50 @@ class SmartSearchOrchestrator:
             "hybrid_mode": False,
             "local_docs_present": True,
             "search_allowed": search_allowed,
+        }
+        self._merge_control(result, control_payload)
+        return result
+
+    def _domain_api_answer(
+        self,
+        *,
+        query: str,
+        domain: str,
+        sources: List[Dict[str, Any]],
+        enhanced_query: str,
+        domain_api_result: Dict[str, Any],
+        has_docs: bool,
+        allow_search: bool,
+    ) -> Dict[str, Any]:
+        decision_meta = {
+            "needs_search": False,
+            "reason": f"domain_api_{domain or 'unknown'}",
+            "raw_text": None,
+            "llm_warning": None,
+            "llm_error": None,
+        }
+        control_payload = {
+            "search_performed": False,
+            "decision": decision_meta,
+            "search_mode": "domain_api",
+            "keywords": [],
+            "hybrid_mode": False,
+            "local_docs_present": has_docs,
+            "search_allowed": allow_search,
+            "domain": domain,
+            "selected_sources": sources,
+            "enhanced_query": enhanced_query,
+            "domain_api": self._summarize_domain_api(domain_api_result),
+        }
+        result = {
+            "query": query,
+            "answer": domain_api_result.get("answer") or "",
+            "search_hits": [],
+            "llm_raw": None,
+            "llm_warning": None,
+            "llm_error": None,
+            "search_query": None,
+            "domain_data": domain_api_result.get("data"),
         }
         self._merge_control(result, control_payload)
         return result
@@ -609,6 +688,21 @@ class SmartSearchOrchestrator:
             target["control"].update(payload)
         else:
             target["control"] = payload
+
+    @staticmethod
+    def _summarize_domain_api(domain_api_result: Dict[str, Any]) -> Dict[str, Any]:
+        snapshot: Dict[str, Any] = {}
+        for key in ("provider", "endpoint", "error", "mode"):
+            value = domain_api_result.get(key)
+            if value is not None:
+                snapshot[key] = value
+        for key in ("location", "origin", "destination"):
+            value = domain_api_result.get(key)
+            if value:
+                snapshot[key] = value
+        if domain_api_result.get("data"):
+            snapshot["data"] = domain_api_result["data"]
+        return snapshot
 
     @staticmethod
     def _normalize_sources(sources: Optional[List[str]]) -> List[str]:

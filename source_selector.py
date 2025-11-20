@@ -1,6 +1,10 @@
 import json
+import os
+import re
 import time
 from typing import Dict, List, Tuple, Any, Optional
+
+import requests
 
 from api import LLMClient
 from timing_utils import TimingRecorder
@@ -8,7 +12,17 @@ from timing_utils import TimingRecorder
 class IntelligentSourceSelector:
     """智能源选择器 - 带具体API配置的版本"""
     
-    def __init__(self, llm_client: Optional[LLMClient] = None, *, use_llm: Optional[bool] = None):
+    def __init__(
+        self,
+        llm_client: Optional[LLMClient] = None,
+        *,
+        use_llm: Optional[bool] = None,
+        google_api_key: Optional[str] = None,
+        google_weather_base_url: str = "https://weather.googleapis.com/v1",
+        google_routes_base_url: str = "https://routes.googleapis.com",
+        google_geocode_url: str = "https://maps.googleapis.com/maps/api/geocode/json",
+        request_timeout: int = 12,
+    ):
         # 领域关键词映射
         self.domain_keywords = {
             "weather": [
@@ -33,30 +47,30 @@ class IntelligentSourceSelector:
         self.domain_sources = {
             "weather": [
                 {
-                    "name": "OpenWeatherMap",
-                    "url": "https://api.openweathermap.org/data/2.5/weather",
+                    "name": "Google Weather API",
+                    "url": "https://weather.googleapis.com/v1/currentConditions:lookup",
                     "type": "rest_api",
-                    "description": "全球天气数据API"
+                    "description": "Google Cloud 提供的实时天气数据"
                 },
                 {
-                    "name": "和风天气", 
-                    "url": "https://devapi.qweather.com/v7/weather/now",
+                    "name": "Google Geocoding API",
+                    "url": "https://maps.googleapis.com/maps/api/geocode/json",
                     "type": "rest_api",
-                    "description": "中国地区天气服务"
+                    "description": "用于将地点名称解析为坐标以便获取天气"
                 }
             ],
             "transportation": [
                 {
-                    "name": "Google Maps Directions API",
-                    "url": "https://maps.googleapis.com/maps/api/directions/json",
+                    "name": "Google Routes Preferred API",
+                    "url": "https://routes.googleapis.com/directions/v2:computeRoutes",
                     "type": "rest_api",
-                    "description": "提供多模式交通路线规划"
+                    "description": "支持交通拥堵的路线规划（含实时路况）"
                 },
                 {
-                    "name": "Google Maps Distance Matrix API",
-                    "url": "https://maps.googleapis.com/maps/api/distancematrix/json",
+                    "name": "Google Geocoding API",
+                    "url": "https://maps.googleapis.com/maps/api/geocode/json",
                     "type": "rest_api",
-                    "description": "计算多个起点和终点之间的行程时间和距离"
+                    "description": "起点/终点地名解析"
                 }
             ],
             "finance": [
@@ -90,6 +104,11 @@ class IntelligentSourceSelector:
         }
         self.llm_client = llm_client
         self.use_llm = use_llm if use_llm is not None else llm_client is not None
+        self.google_api_key = (google_api_key or os.getenv("GOOGLE_API_KEY") or "").strip()
+        self.google_weather_base_url = google_weather_base_url.rstrip("/")
+        self.google_routes_base_url = google_routes_base_url.rstrip("/")
+        self.google_geocode_url = google_geocode_url
+        self.request_timeout = max(3, int(request_timeout))
     
     def classify_domain(self, query: str, timing_recorder: Optional[TimingRecorder] = None) -> str:
         """分类查询的领域"""
@@ -229,6 +248,370 @@ class IntelligentSourceSelector:
     def get_source_details(self, domain: str) -> List[Dict[str, Any]]:
         """获取指定领域的详细数据源信息"""
         return self.domain_sources.get(domain, [])
+
+    # === Google Cloud 专用调用 ===
+    def fetch_domain_data(
+        self,
+        query: str,
+        domain: str,
+        timing_recorder: Optional[TimingRecorder] = None,
+    ) -> Optional[Dict[str, Any]]:
+        """调用特定领域的Google Cloud API并返回结构化结果"""
+        domain = (domain or "").lower().strip()
+        if domain not in {"weather", "transportation"}:
+            return None
+
+        if not self.google_api_key:
+            return {"handled": True, "error": "missing_google_api_key"}
+
+        if domain == "weather":
+            return self._handle_weather(query, timing_recorder=timing_recorder)
+        return self._handle_transportation(query, timing_recorder=timing_recorder)
+
+    def _handle_weather(
+        self,
+        query: str,
+        timing_recorder: Optional[TimingRecorder],
+    ) -> Dict[str, Any]:
+        location_hint = self._extract_weather_location(query)
+        if not location_hint:
+            return {"handled": True, "error": "cannot_parse_location"}
+
+        geocode = self._geocode_text(location_hint, timing_recorder=timing_recorder)
+        if not geocode or geocode.get("error"):
+            return {
+                "handled": True,
+                "error": geocode.get("error") if geocode else "geocode_failed",
+                "location": location_hint,
+            }
+
+        weather_payload = self._call_google_weather(
+            geocode["lat"],
+            geocode["lng"],
+            timing_recorder=timing_recorder,
+        )
+        if not weather_payload or weather_payload.get("error"):
+            return {
+                "handled": True,
+                "error": weather_payload.get("error") if weather_payload else "weather_request_failed",
+                "location": geocode,
+            }
+
+        answer = self._format_weather_answer(location_hint, geocode, weather_payload)
+        return {
+            "handled": True,
+            "provider": "google",
+            "endpoint": f"{self.google_weather_base_url}/currentConditions:lookup",
+            "location": geocode,
+            "data": weather_payload,
+            "answer": answer,
+        }
+
+    def _handle_transportation(
+        self,
+        query: str,
+        timing_recorder: Optional[TimingRecorder],
+    ) -> Dict[str, Any]:
+        parsed = self._extract_route(query)
+        if not parsed:
+            return {"handled": True, "error": "cannot_parse_route"}
+
+        origin_geo = self._geocode_text(parsed["origin"], timing_recorder=timing_recorder)
+        dest_geo = self._geocode_text(parsed["destination"], timing_recorder=timing_recorder)
+        if (not origin_geo or origin_geo.get("error")) or (not dest_geo or dest_geo.get("error")):
+            return {
+                "handled": True,
+                "error": "geocode_failed",
+                "origin": origin_geo or parsed.get("origin"),
+                "destination": dest_geo or parsed.get("destination"),
+            }
+
+        route_payload = self._call_google_routes(
+            origin_geo.get("formatted_address") or parsed["origin"],
+            dest_geo.get("formatted_address") or parsed["destination"],
+            mode=parsed.get("mode") or "DRIVING",
+            timing_recorder=timing_recorder,
+        )
+        if not route_payload or route_payload.get("error"):
+            return {
+                "handled": True,
+                "error": route_payload.get("error") if route_payload else "routes_request_failed",
+                "origin": origin_geo,
+                "destination": dest_geo,
+            }
+
+        answer = self._format_route_answer(parsed, origin_geo, dest_geo, route_payload)
+        return {
+            "handled": True,
+            "provider": "google",
+            "endpoint": f"{self.google_routes_base_url}/directions/v2:computeRoutes",
+            "origin": origin_geo,
+            "destination": dest_geo,
+            "mode": parsed.get("mode") or "DRIVING",
+            "data": route_payload,
+            "answer": answer,
+        }
+
+    def _extract_weather_location(self, query: str) -> str:
+        cleaned = query.strip()
+        # 移除常见天气关键词，保留地点提示
+        for kw in self.domain_keywords.get("weather", []):
+            cleaned = cleaned.replace(kw, " ")
+        cleaned = re.sub(r"[?？。,.!！]", " ", cleaned)
+        cleaned = " ".join(token for token in cleaned.split() if token)
+        if cleaned:
+            return cleaned
+
+        if self.use_llm and self.llm_client:
+            prompt = (
+                "从用户问题中提取地理位置，输出JSON格式，例如 {\"location\": \"北京\"}。"
+                "如果无法提取，返回空字符串。\n\n用户问题：" + query
+            )
+            response = self.llm_client.chat(
+                system_prompt="You extract a location name or city.",
+                user_prompt=prompt,
+                max_tokens=150,
+                temperature=0.0,
+            )
+            try:
+                payload = json.loads(response.get("content") or "{}")
+                location = payload.get("location") or ""
+                if isinstance(location, str) and location.strip():
+                    return location.strip()
+            except Exception:
+                pass
+        return query
+
+    def _extract_route(self, query: str) -> Optional[Dict[str, str]]:
+        # 基础正则：从A到B / from A to B
+        match_cn = re.search(r"从(.+?)到(.+)", query)
+        if match_cn:
+            origin = match_cn.group(1).strip()
+            destination = match_cn.group(2).strip()
+            if origin and destination:
+                return {"origin": origin, "destination": destination, "mode": "DRIVING"}
+
+        match_en = re.search(r"from\s+(.+?)\s+to\s+(.+)", query, flags=re.IGNORECASE)
+        if match_en:
+            origin = match_en.group(1).strip()
+            destination = match_en.group(2).strip()
+            if origin and destination:
+                return {"origin": origin, "destination": destination, "mode": "DRIVING"}
+
+        if self.use_llm and self.llm_client:
+            prompt = (
+                "从用户问题里提取出行起点、终点与方式，输出JSON，如："
+                "{\"origin\": \"上海\", \"destination\": \"苏州\", \"mode\": \"DRIVING\"}。"
+                "mode 取 DRIVING/TRANSIT/WALKING/BICYCLING。提取不到返回空字符串。\n\n"
+                f"用户问题：{query}"
+            )
+            response = self.llm_client.chat(
+                system_prompt="You extract travel origin/destination/mode.",
+                user_prompt=prompt,
+                max_tokens=150,
+                temperature=0.0,
+            )
+            try:
+                payload = json.loads(response.get("content") or "{}")
+                origin = (payload.get("origin") or "").strip()
+                destination = (payload.get("destination") or "").strip()
+                mode = (payload.get("mode") or "DRIVING").upper()
+                if origin and destination:
+                    if mode not in {"DRIVING", "WALKING", "BICYCLING", "TRANSIT"}:
+                        mode = "DRIVING"
+                    return {"origin": origin, "destination": destination, "mode": mode}
+            except Exception:
+                return None
+        return None
+
+    def _geocode_text(
+        self,
+        text: str,
+        timing_recorder: Optional[TimingRecorder] = None,
+    ) -> Optional[Dict[str, Any]]:
+        start = time.perf_counter()
+        try:
+            response = requests.get(
+                self.google_geocode_url,
+                params={"address": text, "key": self.google_api_key, "language": "zh-CN"},
+                timeout=self.request_timeout,
+            )
+            response.raise_for_status()
+            payload = response.json()
+            results = payload.get("results") or []
+            if not results:
+                return None
+            geometry = results[0].get("geometry") or {}
+            location = geometry.get("location") or {}
+            lat = location.get("lat")
+            lng = location.get("lng")
+            if lat is None or lng is None:
+                return None
+            return {
+                "lat": float(lat),
+                "lng": float(lng),
+                "formatted_address": results[0].get("formatted_address") or text,
+            }
+        except Exception as exc:
+            return {"error": str(exc)}
+        finally:
+            if timing_recorder:
+                duration_ms = (time.perf_counter() - start) * 1000
+                timing_recorder.record_search_timing(
+                    source="google_geocoding",
+                    label="Google Geocoding",
+                    duration_ms=duration_ms,
+                )
+
+    def _call_google_weather(
+        self,
+        lat: float,
+        lng: float,
+        timing_recorder: Optional[TimingRecorder] = None,
+    ) -> Optional[Dict[str, Any]]:
+        url = f"{self.google_weather_base_url}/currentConditions:lookup"
+        params = {
+            "location": f"{lat},{lng}",
+            "key": self.google_api_key,
+            "languageCode": "zh-CN",
+            "unitSystem": "METRIC",
+        }
+        start = time.perf_counter()
+        try:
+            response = requests.get(
+                url,
+                params=params,
+                headers={"X-Goog-Api-Key": self.google_api_key},
+                timeout=self.request_timeout,
+            )
+            response.raise_for_status()
+            return response.json()
+        except Exception as exc:
+            return {"error": str(exc)}
+        finally:
+            if timing_recorder:
+                duration_ms = (time.perf_counter() - start) * 1000
+                timing_recorder.record_search_timing(
+                    source="google_weather",
+                    label="Google Weather",
+                    duration_ms=duration_ms,
+                )
+
+    def _call_google_routes(
+        self,
+        origin: str,
+        destination: str,
+        *,
+        mode: str,
+        timing_recorder: Optional[TimingRecorder] = None,
+    ) -> Optional[Dict[str, Any]]:
+        url = f"{self.google_routes_base_url}/directions/v2:computeRoutes"
+        payload = {
+            "origin": {"address": origin},
+            "destination": {"address": destination},
+            "travelMode": mode.upper(),
+            "routingPreference": "TRAFFIC_AWARE_OPTIMAL",
+            "computeAlternativeRoutes": False,
+        }
+        start = time.perf_counter()
+        try:
+            response = requests.post(
+                url,
+                json=payload,
+                headers={
+                    "Content-Type": "application/json",
+                    "X-Goog-Api-Key": self.google_api_key,
+                    "X-Goog-FieldMask": "routes.duration,routes.distanceMeters,routes.legs,routes.travelAdvisory",
+                },
+                timeout=self.request_timeout,
+            )
+            response.raise_for_status()
+            return response.json()
+        except Exception as exc:
+            return {"error": str(exc)}
+        finally:
+            if timing_recorder:
+                duration_ms = (time.perf_counter() - start) * 1000
+                timing_recorder.record_search_timing(
+                    source="google_routes",
+                    label="Google Routes",
+                    duration_ms=duration_ms,
+                )
+
+    @staticmethod
+    def _format_weather_answer(location: str, geo: Dict[str, Any], payload: Dict[str, Any]) -> str:
+        current = payload.get("currentConditions") or payload.get("current") or {}
+        summary = current.get("summary") or current.get("conditions") or current.get("weatherText")
+        temp = current.get("temperature") or current.get("temperatureCelsius") or current.get("tempCelsius")
+        humidity = current.get("humidity") or current.get("relativeHumidity")
+        wind = current.get("windSpeed") or current.get("windSpeedKph") or current.get("windSpeedMps")
+
+        parts = [f"{geo.get('formatted_address') or location} 当前天气"]
+        if summary:
+            parts.append(f"概况：{summary}")
+        if temp is not None:
+            try:
+                temp_val = float(temp)
+                parts.append(f"气温：{temp_val:.1f}°C")
+            except (TypeError, ValueError):
+                parts.append(f"气温：{temp}")
+        if humidity is not None:
+            parts.append(f"湿度：{humidity}%")
+        if wind is not None:
+            parts.append(f"风速：{wind}")
+
+        if len(parts) == 1:
+            parts.append("（未能解析详细字段，请检查 Google Weather API 权限或响应格式）")
+        return "；".join(parts)
+
+    @staticmethod
+    def _format_route_answer(
+        parsed: Dict[str, str],
+        origin_geo: Dict[str, Any],
+        dest_geo: Dict[str, Any],
+        payload: Dict[str, Any],
+    ) -> str:
+        routes = payload.get("routes") or []
+        first = routes[0] if routes else {}
+        distance_m = first.get("distanceMeters")
+        duration = first.get("duration")
+        advisory = first.get("travelAdvisory") or {}
+        delay = advisory.get("trafficInfo", {}).get("delay")
+
+        origin_label = origin_geo.get("formatted_address") or parsed.get("origin")
+        dest_label = dest_geo.get("formatted_address") or parsed.get("destination")
+
+        parts = [f"{origin_label} -> {dest_label}（{parsed.get('mode', 'DRIVING')}）"]
+        if distance_m is not None:
+            try:
+                km = float(distance_m) / 1000.0
+                parts.append(f"距离约 {km:.1f} 公里")
+            except (TypeError, ValueError):
+                parts.append(f"距离：{distance_m}")
+        if duration:
+            # Google 返回形如 "3600s"
+            minutes = ""
+            try:
+                if isinstance(duration, str) and duration.endswith("s"):
+                    seconds = float(duration.rstrip("s"))
+                    minutes_val = seconds / 60
+                    minutes = f"{minutes_val:.0f} 分钟"
+            except (TypeError, ValueError):
+                minutes = duration
+            parts.append(f"预估耗时 {minutes or duration}")
+        if delay:
+            try:
+                if isinstance(delay, str) and delay.endswith("s"):
+                    delay_min = float(delay.rstrip("s")) / 60
+                    parts.append(f"拥堵额外耗时约 {delay_min:.0f} 分钟")
+                else:
+                    parts.append(f"拥堵延迟：{delay}")
+            except (TypeError, ValueError):
+                parts.append(f"拥堵延迟：{delay}")
+
+        if len(parts) == 1:
+            parts.append("未能获取路线详情，请检查 Google Routes 配额或请求参数。")
+        return "；".join(parts)
 
 def test_basic_functionality():
     """基础功能测试"""

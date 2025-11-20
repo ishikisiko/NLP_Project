@@ -605,6 +605,7 @@ def main() -> None:
         missing_search_sources=missing_sources,
         configured_search_sources=configured_sources,
         show_timings=show_timings,
+        google_api_key=google_key_cli,
     )
     
     result = orchestrator.answer(
