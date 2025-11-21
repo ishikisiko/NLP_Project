@@ -13,6 +13,7 @@
     "YOU_API_KEY": "YOUR_YOU_API_KEY_HERE",
     "GOOGLE_API_KEY": "YOUR_GOOGLE_API_KEY_HERE",
     "GOOGLE_CX": "YOUR_GOOGLE_CUSTOM_SEARCH_ENGINE_ID_HERE",
+    "FINNHUB_API_KEY": "YOUR_FINNHUB_API_KEY_HERE",
     "youSearch": {
         "country": "US",
         "safesearch": "moderate",
@@ -79,6 +80,7 @@
             "base_url": "https://openrouter.ai/api/v1",
             "available_models": [
                 "minimax/minimax-m2:free",
+                "x-ai/grok-4.1-fast:free",
                 "deepseek/deepseek-r1-0528:free"
             ]
         },

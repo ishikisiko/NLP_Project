@@ -616,18 +616,11 @@ def main() -> None:
     google_cfg_cli = config.get("googleSearch") or {}
     google_key_cli = (google_cfg_cli.get("api_key") or config.get("GOOGLE_API_KEY") or "").strip()
     google_cx_cli = (google_cfg_cli.get("cx") or config.get("GOOGLE_CX") or "").strip()
+    sportsdb_key_cli = (config.get("SPORTSDB_API_KEY") or "").strip()
+    
     if google_key_cli and google_cx_cli:
         configured_sources.append("google")
-    if allow_search:
-        search_client = build_search_client(config)
-        if search_client:
-            requested_sources = list(getattr(search_client, "requested_sources", []))
-            active_sources = list(getattr(search_client, "active_sources", []))
-            active_labels = list(getattr(search_client, "active_source_labels", []))
-            missing_sources = list(getattr(search_client, "missing_requested_sources", []))
-            configured_sources = list(getattr(search_client, "configured_sources", []))
-
-    show_timings = bool(config.get("displayResponseTimes", False))
+    
     orchestrator = SmartSearchOrchestrator(
         llm_client=llm_client,
         classifier_llm_client=classifier_client,
@@ -644,6 +637,7 @@ def main() -> None:
         configured_search_sources=configured_sources,
         show_timings=show_timings,
         google_api_key=google_key_cli,
+        sportsdb_api_key=sportsdb_key_cli,
     )
     
     result = orchestrator.answer(

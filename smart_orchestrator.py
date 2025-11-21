@@ -53,6 +53,7 @@ class SmartSearchOrchestrator:
         configured_search_sources: Optional[List[str]] = None,
         show_timings: bool = False,
         google_api_key: Optional[str] = None,
+        sportsdb_api_key: Optional[str] = None,
     ) -> None:
         self.llm_client = llm_client
         self.classifier_llm_client = classifier_llm_client
@@ -72,6 +73,7 @@ class SmartSearchOrchestrator:
             llm_client=selector_client,
             use_llm=selector_client is not None,
             google_api_key=google_api_key,
+            sportsdb_api_key=sportsdb_api_key,
         )
         self.requested_search_sources = self._normalize_sources(requested_search_sources)
         raw_active_sources = active_search_sources or getattr(search_client, "active_sources", [])
@@ -157,7 +159,7 @@ class SmartSearchOrchestrator:
             domain,
             timing_recorder=timing_recorder,
         )
-        if domain_api_result and domain_api_result.get("answer"):
+        if domain_api_result and domain_api_result.get("handled") and domain_api_result.get("answer"):
             return self._finalize_with_timings(
                 self._domain_api_answer(
                     query=query,
@@ -293,7 +295,7 @@ class SmartSearchOrchestrator:
         }
         if domain_api_result:
             control_payload["domain_api"] = self._summarize_domain_api(domain_api_result)
-            if domain_api_result.get("error"):
+            if domain_api_result.get("error") and not domain_api_result.get("skipped"):
                 domain_warning = f"领域API调用失败：{domain_api_result['error']}"
                 existing_warnings = result.get("search_warnings")
                 if isinstance(existing_warnings, list):
@@ -450,6 +452,7 @@ class SmartSearchOrchestrator:
         domain_api_result: Dict[str, Any],
         has_docs: bool,
         allow_search: bool,
+        timing_recorder: Optional[TimingRecorder] = None,
     ) -> Dict[str, Any]:
         decision_meta = {
             "needs_search": False,
@@ -471,18 +474,74 @@ class SmartSearchOrchestrator:
             "enhanced_query": enhanced_query,
             "domain_api": self._summarize_domain_api(domain_api_result),
         }
+        
+        # LLM增强回复
+        domain_data = domain_api_result.get("data")
+        basic_answer = domain_api_result.get("answer") or ""
+        if domain_data and self.llm_client:
+            enhanced = self._enhance_domain_answer(query, domain, domain_data, timing_recorder)
+            answer = enhanced.get("content") or basic_answer
+            llm_raw = enhanced.get("raw")
+            llm_warning = enhanced.get("warning")
+            llm_error = enhanced.get("error")
+        else:
+            answer = basic_answer
+            llm_raw = None
+            llm_warning = None
+            llm_error = None
+        
         result = {
             "query": query,
-            "answer": domain_api_result.get("answer") or "",
+            "answer": answer,
             "search_hits": [],
-            "llm_raw": None,
-            "llm_warning": None,
-            "llm_error": None,
+            "llm_raw": llm_raw,
+            "llm_warning": llm_warning,
+            "llm_error": llm_error,
             "search_query": None,
-            "domain_data": domain_api_result.get("data"),
+            "domain_data": domain_data,
         }
         self._merge_control(result, control_payload)
         return result
+
+    def _enhance_domain_answer(
+        self,
+        query: str,
+        domain: str,
+        domain_data: Dict[str, Any],
+        timing_recorder: Optional[TimingRecorder] = None,
+    ) -> Dict[str, Any]:
+        if domain == "weather":
+            system_prompt = (
+                "你是天气助手。根据实时数据，给出自然、丰富的回复，包括当前状况、穿衣/出行建议。"
+                "保持简洁、专业、中文。"
+            )
+            data_summary = (
+                f"位置：{domain_data.get('location', {}).get('formatted_address', '未知')}\n"
+                f"概况：{domain_data.get('weatherCondition', {}).get('description', {}).get('text', '未知')}\n"
+                f"温度：{domain_data.get('temperature', {}).get('degrees', '未知')}°C\n"
+                f"湿度：{domain_data.get('relativeHumidity', '未知')}%\n"
+                f"风速：{domain_data.get('wind', {}).get('speed', {}).get('value', '未知')} km/h"
+            )
+            user_prompt = f"查询：{query}\n实时数据：\n{data_summary}\n生成回复："
+        elif domain == "transportation":
+            system_prompt = (
+                "你是交通助手。根据路线数据，给出详细建议，包括时间、拥堵、备选。"
+                "保持简洁、专业、中文。"
+            )
+            data_summary = json.dumps(domain_data, ensure_ascii=False, indent=2)
+            user_prompt = f"查询：{query}\n路线数据：{data_summary}\n生成回复："
+        else:
+            return {"content": "", "raw": None}
+        
+        return self._chat_with_timing(
+            self.llm_client,
+            label=f"domain_enhance_{domain}",
+            timing_recorder=timing_recorder,
+            system_prompt=system_prompt,
+            user_prompt=user_prompt,
+            max_tokens=300,
+            temperature=0.3,
+        )
 
     def _direct_answer_from_decision(
         self,

@@ -6,6 +6,9 @@ from typing import Dict, List, Tuple, Any, Optional
 
 import requests
 
+import yfinance as yf
+from yahoo_fin import stock_info
+
 from api import LLMClient
 from timing_utils import TimingRecorder
 
@@ -22,6 +25,8 @@ class IntelligentSourceSelector:
         google_routes_base_url: str = "https://routes.googleapis.com",
         google_geocode_url: str = "https://maps.googleapis.com/maps/api/geocode/json",
         request_timeout: int = 12,
+        finnhub_api_key: Optional[str] = None,
+        sportsdb_api_key: Optional[str] = None,
     ):
         # 领域关键词映射
         self.domain_keywords = {
@@ -39,6 +44,10 @@ class IntelligentSourceSelector:
                 "股票", "股价", "金融", "汇率", "投资", "基金", "黄金", "原油",
                 "股價", "匯率", "投資", "基金", "黃金", "原油",
                 "stock", "finance", "exchange rate", "investment", "fund"
+            ],
+            "sports": [
+                "体育", "足球", "篮球", "网球", "比赛", "比分", "NBA", "奥运", "世界杯", "英超",
+                "sports", "football", "basketball", "tennis", "match", "score", "NBA", "Olympics", "Premier League"
             ],
             "general": []  # 通用领域，无特定关键词
         }
@@ -75,16 +84,28 @@ class IntelligentSourceSelector:
             ],
             "finance": [
                 {
-                    "name": "Alpha Vantage",
-                    "url": "https://www.alphavantage.co/query",
-                    "type": "rest_api",
-                    "description": "免费股票和金融市场数据"
+                    "name": "yfinance",
+                    "type": "python_lib", 
+                    "description": "Yahoo Finance Python库 (yfinance)"
                 },
                 {
-                    "name": "Yahoo Finance",
-                    "url": "https://yfapi.net/v6/finance/quote",
-                    "type": "rest_api", 
-                    "description": "实时股票行情和数据"  # 修复这里，添加了缺失的引号
+                    "name": "yahoo-fin",
+                    "type": "python_lib", 
+                    "description": "Yahoo Finance Python库 (yahoo-fin)"
+                },
+                {
+                    "name": "Finnhub",
+                    "url": "https://finnhub.io/api/v1/quote",
+                    "type": "rest_api",
+                    "description": "实时股票报价和金融市场数据"
+                }
+            ],
+            "sports": [
+                {
+                    "name": "TheSportsDB",
+                    "url": "https://www.thesportsdb.com/api/v1/json/1/search_all_events.php",
+                    "type": "rest_api",
+                    "description": "体育赛事、球队和比分数据"
                 }
             ],
             "general": [
@@ -109,6 +130,9 @@ class IntelligentSourceSelector:
         self.google_routes_base_url = google_routes_base_url.rstrip("/")
         self.google_geocode_url = google_geocode_url
         self.request_timeout = max(3, int(request_timeout))
+        self.finnhub_api_key = (finnhub_api_key or os.getenv("FINNHUB_API_KEY") or "").strip()
+        
+        self.sportsdb_api_key = (sportsdb_api_key or os.getenv("SPORTSDB_API_KEY") or "123").strip()
     
     def classify_domain(self, query: str, timing_recorder: Optional[TimingRecorder] = None) -> str:
         """分类查询的领域"""
@@ -145,8 +169,8 @@ class IntelligentSourceSelector:
         allowed = sorted(self.domain_keywords.keys())
         prompt = (
             "你是NLU分类器，请将用户问题归类到固定领域中。"
-            "只允许以下标签: weather, transportation, finance, general."
-            "输出严格的JSON，例如 {\"domain\": \"weather\"}.\n\n"
+            "只允许以下标签: weather, transportation, finance, sports, general."
+            "输出严格的JSON，例如 {\"domain\": \"sports\"}.\n\n"
             f"用户问题: {query}"
         )
         try:
@@ -231,6 +255,7 @@ class IntelligentSourceSelector:
             "weather": "current weather forecast humidity wind speed",
             "transportation": "live traffic status transit delays road conditions",
             "finance": "latest market data stock price trend analysis",
+            "sports": "latest match scores results standings fixtures sports news",
         }
 
         supplemental_keywords = " ".join(self.domain_keywords.get(domain, [])[:3])
@@ -258,7 +283,7 @@ class IntelligentSourceSelector:
     ) -> Optional[Dict[str, Any]]:
         """调用特定领域的Google Cloud API并返回结构化结果"""
         domain = (domain or "").lower().strip()
-        if domain not in {"weather", "transportation"}:
+        if domain not in {"weather", "transportation", "finance", "sports"}:
             return None
 
         if not self.google_api_key:
@@ -266,13 +291,23 @@ class IntelligentSourceSelector:
 
         if domain == "weather":
             return self._handle_weather(query, timing_recorder=timing_recorder)
-        return self._handle_transportation(query, timing_recorder=timing_recorder)
+        if domain == "transportation":
+            return self._handle_transportation(query, timing_recorder=timing_recorder)
+        if domain == "finance":
+            return self._handle_finance(query, timing_recorder=timing_recorder)
+        if domain == "sports":
+            return self._handle_sports(query, timing_recorder=timing_recorder)
 
     def _handle_weather(
         self,
         query: str,
         timing_recorder: Optional[TimingRecorder],
     ) -> Dict[str, Any]:
+        # 检测预报查询，fallback 搜索
+        forecast_keywords = ["明天", "后天", "预报", "forecast", "tomorrow"]
+        if any(kw in query for kw in forecast_keywords):
+            return {"handled": False, "reason": "forecast_requested_fallback_search"}
+
         location_hint = self._extract_weather_location(query)
         if not location_hint:
             return {"handled": True, "error": "cannot_parse_location"}
@@ -284,6 +319,9 @@ class IntelligentSourceSelector:
                 "error": geocode.get("error") if geocode else "geocode_failed",
                 "location": location_hint,
             }
+
+        if "中国" in geocode.get("formatted_address", "") or "China" in geocode.get("formatted_address", ""):
+            return {"handled": True, "skipped": True, "reason": "china_location_not_supported_by_google_weather", "location": geocode}
 
         weather_payload = self._call_google_weather(
             geocode["lat"],
@@ -326,29 +364,106 @@ class IntelligentSourceSelector:
                 "destination": dest_geo or parsed.get("destination"),
             }
 
-        route_payload = self._call_google_routes(
-            origin_geo.get("formatted_address") or parsed["origin"],
-            dest_geo.get("formatted_address") or parsed["destination"],
-            mode=parsed.get("mode") or "DRIVING",
-            timing_recorder=timing_recorder,
-        )
-        if not route_payload or route_payload.get("error"):
-            return {
-                "handled": True,
-                "error": route_payload.get("error") if route_payload else "routes_request_failed",
-                "origin": origin_geo,
-                "destination": dest_geo,
-            }
+        origin_label = origin_geo.get("formatted_address") or parsed["origin"]
+        dest_label = dest_geo.get("formatted_address") or parsed["destination"]
 
-        answer = self._format_route_answer(parsed, origin_geo, dest_geo, route_payload)
+        modes = [
+            {"internal": "DRIVING", "api": "DRIVE", "display": "驾车"},
+            {"internal": "TRANSIT", "api": "TRANSIT", "display": "公共交通"},
+        ]
+
+        routes = []
+        answers = []
+        for m in modes:
+            route_payload = self._call_google_routes(
+                origin_label,
+                dest_label,
+                mode=m["api"],
+                timing_recorder=timing_recorder,
+            )
+            if route_payload and not route_payload.get("error"):
+                answer = self._format_route_answer(
+                    {"mode": m["internal"]}, origin_geo, dest_geo, route_payload
+                )
+                routes.append({
+                    "mode": m["display"],
+                    "data": route_payload,
+                    "answer": answer
+                })
+                answers.append(answer)
+            else:
+                answers.append(f"{m['display']}：获取失败 ({route_payload.get('error') if route_payload else '未知错误'})")
+
+        combined_answer = f"{origin_label} -> {dest_label}\n" + "\n".join(answers)
+
         return {
             "handled": True,
             "provider": "google",
             "endpoint": f"{self.google_routes_base_url}/directions/v2:computeRoutes",
             "origin": origin_geo,
             "destination": dest_geo,
-            "mode": parsed.get("mode") or "DRIVING",
-            "data": route_payload,
+            "routes": routes,
+            "data": {"routes": [r["data"] for r in routes]},
+            "answer": combined_answer,
+        }
+
+    def _handle_finance(
+        self,
+        query: str,
+        timing_recorder: Optional[TimingRecorder],
+    ) -> Dict[str, Any]:
+        symbol = self._extract_finance_symbol(query)
+        if not symbol:
+            return {"handled": True, "error": "cannot_parse_symbol"}
+
+        if not self.finnhub_api_key:
+            return {"handled": True, "error": "missing_finnhub_api_key"}
+
+        quote = self._query_stock_price(symbol, timing_recorder=timing_recorder)
+        if not quote or quote.get("error"):
+            return {
+                "handled": True,
+                "error": quote.get("error") if quote else "finnhub_request_failed",
+                "symbol": symbol,
+            }
+
+        answer = self._format_finance_answer(symbol, quote)
+        return {
+            "handled": True,
+            "provider": "finnhub",
+            "endpoint": "https://finnhub.io/api/v1/quote",
+            "symbol": symbol,
+            "data": quote,
+            "answer": answer,
+        }
+
+    def _handle_sports(
+        self,
+        query: str,
+        timing_recorder: Optional[TimingRecorder],
+    ) -> Dict[str, Any]:
+        entity = self._extract_sports_entity(query)
+        if not entity:
+            return {"handled": True, "error": "cannot_parse_sports_entity"}
+
+        if not self.sportsdb_api_key:
+            return {"handled": True, "error": "missing_sportsdb_api_key"}
+
+        data = self._call_sportsdb_events(entity, timing_recorder=timing_recorder)
+        if not data or data.get("error") or not data.get("events"):
+            return {
+                "handled": True,
+                "error": data.get("error", "no_events_found") if data else "api_failed",
+                "entity": entity,
+            }
+
+        answer = self._format_sports_answer(entity, data["events"][0])
+        return {
+            "handled": True,
+            "provider": "sportsdb",
+            "endpoint": f"https://www.thesportsdb.com/api/v1/json/{self.sportsdb_api_key}/search_all_events.php",
+            "entity": entity,
+            "data": data,
             "answer": answer,
         }
 
@@ -424,64 +539,90 @@ class IntelligentSourceSelector:
                 return None
         return None
 
-    def _geocode_text(
-        self,
-        text: str,
-        timing_recorder: Optional[TimingRecorder] = None,
-    ) -> Optional[Dict[str, Any]]:
-        start = time.perf_counter()
-        try:
-            response = requests.get(
-                self.google_geocode_url,
-                params={"address": text, "key": self.google_api_key, "language": "zh-CN"},
-                timeout=self.request_timeout,
+    def _extract_finance_symbol(self, query: str) -> str:
+        # 简单正则匹配常见股票代码，如 AAPL, TSLA, 600000 等
+        match_us = re.search(r'\b([A-Z]{1,5})\b(?=\s*(?:股价|股票|price|stock))', query, re.IGNORECASE)
+        if match_us:
+            return match_us.group(1).upper()
+        
+        match_cn = re.search(r'\b([0-9]{6})\b(?=\s*(?:股价|股票))', query)
+        if match_cn:
+            return match_cn.group(1)
+        
+        # LLM fallback
+        if self.use_llm and self.llm_client:
+            prompt = (
+                "从用户问题中提取股票代码（美股如AAPL，A股如600000），输出JSON {\"symbol\": \"AAPL\"}。"
+                "无法提取返回空字符串。\n\n用户问题：" + query
             )
-            response.raise_for_status()
-            payload = response.json()
-            results = payload.get("results") or []
-            if not results:
-                return None
-            geometry = results[0].get("geometry") or {}
-            location = geometry.get("location") or {}
-            lat = location.get("lat")
-            lng = location.get("lng")
-            if lat is None or lng is None:
-                return None
-            return {
-                "lat": float(lat),
-                "lng": float(lng),
-                "formatted_address": results[0].get("formatted_address") or text,
-            }
-        except Exception as exc:
-            return {"error": str(exc)}
-        finally:
-            if timing_recorder:
-                duration_ms = (time.perf_counter() - start) * 1000
-                timing_recorder.record_search_timing(
-                    source="google_geocoding",
-                    label="Google Geocoding",
-                    duration_ms=duration_ms,
-                )
+            response = self.llm_client.chat(
+                system_prompt="Extract stock symbol.",
+                user_prompt=prompt,
+                max_tokens=100,
+                temperature=0.0,
+            )
+            try:
+                payload = json.loads(response.get("content") or "{}")
+                symbol = payload.get("symbol") or ""
+                if isinstance(symbol, str) and re.match(r'^[A-Z]{1,5}$|^[0-9]{6}$', symbol):
+                    return symbol
+            except Exception:
+                pass
+        return ""
 
-    def _call_google_weather(
+    def _extract_sports_entity(self, query: str) -> str:
+        # 正则匹配常见体育实体
+        patterns = [
+            r'(?:球队|队|比赛|赛事|vs|对阵)\s*[:：]?\s*([^\s,。？?]+(?:\s+[^\s,。？?]+)*)',
+            r'([a-zA-Z]{2,}(?:\s+[a-zA-Z]{2,})?)(?:\s+(?:vs|对|战)\s+[a-zA-Z]{2,})?',
+            r'([^\s,。？?]{2,})(?:\s*(?:比赛|score|结果))?'
+        ]
+        for pattern in patterns:
+            match = re.search(pattern, query, re.IGNORECASE)
+            if match:
+                candidate = match.group(1).strip()
+                if len(candidate) > 1:
+                    return candidate
+
+        # LLM fallback
+        if self.use_llm and self.llm_client:
+            prompt = (
+                "从体育问题中提取核心实体（球队名、赛事名），输出JSON {\"entity\": \"曼联\"}。"
+                "无法提取返回空字符串。\n\n用户问题：" + query
+            )
+            try:
+                response = self.llm_client.chat(
+                    system_prompt="Extract sports entity like team or event.",
+                    user_prompt=prompt,
+                    max_tokens=100,
+                    temperature=0.0,
+                )
+                parsed = json.loads(response.get("content") or "{}")
+                entity = parsed.get("entity") or ""
+                if isinstance(entity, str) and entity.strip():
+                    return entity.strip()
+            except Exception:
+                pass
+
+        # Fallback to first meaningful word
+        words = re.findall(r'\b[a-zA-Z\u4e00-\u9fff]{2,}\b', query)
+        return words[0] if words else ""
+
+    def _call_finnhub_quote(
         self,
-        lat: float,
-        lng: float,
+        symbol: str,
         timing_recorder: Optional[TimingRecorder] = None,
     ) -> Optional[Dict[str, Any]]:
-        url = f"{self.google_weather_base_url}/currentConditions:lookup"
+        url = "https://finnhub.io/api/v1/quote"
         params = {
-            "location": f"{lat},{lng}",
-            "key": self.google_api_key,
-            "languageCode": "zh-CN",
-            "unitSystem": "METRIC",
+            "symbol": symbol,
+            "token": self.finnhub_api_key,
         }
         start = time.perf_counter()
         try:
             response = requests.get(
                 url,
                 params=params,
-                headers={"X-Goog-Api-Key": self.google_api_key},
                 timeout=self.request_timeout,
             )
             response.raise_for_status()
@@ -492,135 +633,101 @@ class IntelligentSourceSelector:
             if timing_recorder:
                 duration_ms = (time.perf_counter() - start) * 1000
                 timing_recorder.record_search_timing(
-                    source="google_weather",
-                    label="Google Weather",
+                    source="finnhub_quote",
+                    label="Finnhub Quote",
                     duration_ms=duration_ms,
                 )
 
-    def _call_google_routes(
+    def _call_yfinance_quote(
         self,
-        origin: str,
-        destination: str,
-        *,
-        mode: str,
+        symbol: str,
         timing_recorder: Optional[TimingRecorder] = None,
     ) -> Optional[Dict[str, Any]]:
-        url = f"{self.google_routes_base_url}/directions/v2:computeRoutes"
-        # Map internal modes to Google Routes API v2 modes
-        mode_mapping = {
-            "DRIVING": "DRIVE",
-            "WALKING": "WALK",
-            "BICYCLING": "BICYCLE",
-            "TRANSIT": "TRANSIT"
-        }
-        api_mode = mode_mapping.get(mode.upper(), "DRIVE")
-
-        payload = {
-            "origin": {"address": origin},
-            "destination": {"address": destination},
-            "travelMode": api_mode,
-            "routingPreference": "TRAFFIC_AWARE_OPTIMAL",
-            "computeAlternativeRoutes": False,
-        }
         start = time.perf_counter()
         try:
-            response = requests.post(
-                url,
-                json=payload,
-                headers={
-                    "Content-Type": "application/json",
-                    "X-Goog-Api-Key": self.google_api_key,
-                    "X-Goog-FieldMask": "routes.duration,routes.distanceMeters,routes.legs,routes.travelAdvisory",
-                },
-                timeout=self.request_timeout,
-            )
-            response.raise_for_status()
-            return response.json()
+            ticker = yf.Ticker(symbol)
+            info = ticker.info
+            quote = {
+                "c": info.get("currentPrice") or info.get("regularMarketPrice"),
+                "h": info.get("dayHigh") or info.get("regularMarketDayHigh"),
+                "l": info.get("dayLow") or info.get("regularMarketDayLow"),
+                "o": info.get("regularMarketOpen"),
+                "pc": info.get("regularMarketPreviousClose"),
+            }
+            quote = {k: v for k, v in quote.items() if v is not None}
+            if not quote:
+                return {"error": "no_data"}
+            return quote
         except Exception as exc:
             return {"error": str(exc)}
         finally:
             if timing_recorder:
                 duration_ms = (time.perf_counter() - start) * 1000
                 timing_recorder.record_search_timing(
-                    source="google_routes",
-                    label="Google Routes",
+                    source="yfinance",
+                    label="yfinance Quote",
                     duration_ms=duration_ms,
                 )
 
-    @staticmethod
-    def _format_weather_answer(location: str, geo: Dict[str, Any], payload: Dict[str, Any]) -> str:
-        current = payload.get("currentConditions") or payload.get("current") or {}
-        summary = current.get("summary") or current.get("conditions") or current.get("weatherText")
-        temp = current.get("temperature") or current.get("temperatureCelsius") or current.get("tempCelsius")
-        humidity = current.get("humidity") or current.get("relativeHumidity")
-        wind = current.get("windSpeed") or current.get("windSpeedKph") or current.get("windSpeedMps")
+    def _call_yahoo_fin_quote(
+        self,
+        symbol: str,
+        timing_recorder: Optional[TimingRecorder] = None,
+    ) -> Optional[Dict[str, Any]]:
+        start = time.perf_counter()
+        try:
+            c = stock_info.get_live_price(symbol)
+            if c is None:
+                raise ValueError("No price data")
+            return {"c": c}
+        except Exception as exc:
+            return {"error": str(exc)}
+        finally:
+            if timing_recorder:
+                duration_ms = (time.perf_counter() - start) * 1000
+                timing_recorder.record_search_timing(
+                    source="yahoo_fin",
+                    label="yahoo_fin Quote",
+                    duration_ms=duration_ms,
+                )
 
-        parts = [f"{geo.get('formatted_address') or location} 当前天气"]
-        if summary:
-            parts.append(f"概况：{summary}")
-        if temp is not None:
-            try:
-                temp_val = float(temp)
-                parts.append(f"气温：{temp_val:.1f}°C")
-            except (TypeError, ValueError):
-                parts.append(f"气温：{temp}")
-        if humidity is not None:
-            parts.append(f"湿度：{humidity}%")
-        if wind is not None:
-            parts.append(f"风速：{wind}")
+    def _call_sportsdb_events(
+        self,
+        entity: str,
+        timing_recorder: Optional[TimingRecorder] = None,
+    ) -> Optional[Dict[str, Any]]:
+        url = f"https://www.thesportsdb.com/api/v1/json/{self.sportsdb_api_key}/search_all_events.php?e={requests.utils.quote(entity)}"
+        start = time.perf_counter()
+        try:
+            response = requests.get(url, timeout=self.request_timeout)
+            response.raise_for_status()
+            data = response.json()
+            return data
+        except Exception as exc:
+            return {"error": str(exc)}
+        finally:
+            if timing_recorder:
+                duration_ms = (time.perf_counter() - start) * 1000
+                timing_recorder.record_search_timing(
+                    source="sportsdb_events",
+                    label="TheSportsDB Events",
+                    duration_ms=duration_ms,
+                )
 
-        if len(parts) == 1:
-            parts.append("（未能解析详细字段，请检查 Google Weather API 权限或响应格式）")
-        return "；".join(parts)
-
-    @staticmethod
-    def _format_route_answer(
-        parsed: Dict[str, str],
-        origin_geo: Dict[str, Any],
-        dest_geo: Dict[str, Any],
-        payload: Dict[str, Any],
-    ) -> str:
-        routes = payload.get("routes") or []
-        first = routes[0] if routes else {}
-        distance_m = first.get("distanceMeters")
-        duration = first.get("duration")
-        advisory = first.get("travelAdvisory") or {}
-        delay = advisory.get("trafficInfo", {}).get("delay")
-
-        origin_label = origin_geo.get("formatted_address") or parsed.get("origin")
-        dest_label = dest_geo.get("formatted_address") or parsed.get("destination")
-
-        parts = [f"{origin_label} -> {dest_label}（{parsed.get('mode', 'DRIVING')}）"]
-        if distance_m is not None:
-            try:
-                km = float(distance_m) / 1000.0
-                parts.append(f"距离约 {km:.1f} 公里")
-            except (TypeError, ValueError):
-                parts.append(f"距离：{distance_m}")
-        if duration:
-            # Google 返回形如 "3600s"
-            minutes = ""
-            try:
-                if isinstance(duration, str) and duration.endswith("s"):
-                    seconds = float(duration.rstrip("s"))
-                    minutes_val = seconds / 60
-                    minutes = f"{minutes_val:.0f} 分钟"
-            except (TypeError, ValueError):
-                minutes = duration
-            parts.append(f"预估耗时 {minutes or duration}")
-        if delay:
-            try:
-                if isinstance(delay, str) and delay.endswith("s"):
-                    delay_min = float(delay.rstrip("s")) / 60
-                    parts.append(f"拥堵额外耗时约 {delay_min:.0f} 分钟")
-                else:
-                    parts.append(f"拥堵延迟：{delay}")
-            except (TypeError, ValueError):
-                parts.append(f"拥堵延迟：{delay}")
-
-        if len(parts) == 1:
-            parts.append("未能获取路线详情，请检查 Google Routes 配额或请求参数。")
-        return "；".join(parts)
+    def _format_sports_answer(self, entity: str, event: Dict) -> str:
+        date_event = event.get('dateEvent', '未知日期')
+        str_time = event.get('strTime', '未知时间')
+        str_home_team = event.get('strHomeTeam', '未知主队')
+        str_away_team = event.get('strAwayTeam', '未知客队')
+        str_league = event.get('strLeague', '未知联赛')
+        str_status = event.get('intHomeScore', 'N/A') + '-' + event.get('intAwayScore', 'N/A') if event.get('intHomeScore') is not None else '未开始'
+        return (
+            f"{entity} 最新相关赛事：\n"
+            f"对阵：{str_home_team} vs {str_away_team}\n"
+            f"联赛：{str_league}\n"
+            f"比分：{str_status}\n"
+            f"时间：{date_event} {str_time}"
+        )
 
 def test_basic_functionality():
     """基础功能测试"""
@@ -630,7 +737,13 @@ def test_basic_functionality():
         "今天天气怎么样？",
         "北京交通状况",
         "腾讯股票价格",
-        "什么是人工智能"
+        "曼联最近比赛",
+        "什么是人工智能",
+        "最新NBA比赛结果",
+        "明天的天气预报",
+        "从上海到北京的高铁",
+        "苹果公司的股价",
+        "切尔西对阵曼联的比赛"
     ]
     
     print("✅ 基础功能验证测试")

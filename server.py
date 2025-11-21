@@ -127,17 +127,17 @@ def build_pipeline(
     if model_override:
         # Check if it's a model path (contains '/') and convert to provider
         if "/" in model_override:
-            # Map specific models to providers
-            model_to_provider = {
-                "minimax/minimax-m2:free": "openrouter",
-                "deepseek/deepseek-r1-0528:free": "openrouter",
-            }
-            
-            if model_override in model_to_provider:
-                config["LLM_PROVIDER"] = model_to_provider[model_override]
-            else:
-                # For models like "openai/gpt-3.5-turbo", extract provider
-                config["LLM_PROVIDER"] = model_override.split("/")[0]
+            # Find provider that has this model in available_models
+            matched_provider = None
+            for p_name, p_cfg in providers_cfg.items():
+                avail = p_cfg.get("available_models", [])
+                if model_override in avail:
+                    matched_provider = p_name
+                    break
+            provider = matched_provider or model_override.split("/")[0]
+            config["LLM_PROVIDER"] = provider
+            if provider in providers_cfg:
+                providers_cfg[provider]["model"] = model_override
         else:
             if model_override in providers_cfg:
                 # Direct provider selection (e.g., "glm")
