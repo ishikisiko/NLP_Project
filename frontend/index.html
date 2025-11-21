@@ -16,30 +16,6 @@
         <main class="chat-shell">
             <section id="chat-log" class="chat-log" aria-live="polite" aria-label="对话内容"></section>
 
-            <section id="workflow-panel" class="workflow-panel" aria-live="polite" aria-atomic="true">
-                <div class="workflow-timeline">
-                    <div class="workflow-stage" data-stage="search">
-                        <span class="workflow-stage-indicator" aria-hidden="true"></span>
-                        <div class="workflow-stage-text">
-                            <p class="workflow-stage-label">联网搜索</p>
-                            <p class="workflow-stage-status" id="workflow-stage-search-status">等待触发</p>
-                        </div>
-                    </div>
-                    <div class="workflow-stage" data-stage="llm">
-                        <span class="workflow-stage-indicator" aria-hidden="true"></span>
-                        <div class="workflow-stage-text">
-                            <p class="workflow-stage-label">LLM 推理</p>
-                            <p class="workflow-stage-status" id="workflow-stage-llm-status">未开始</p>
-                        </div>
-                    </div>
-                </div>
-                <div class="workflow-preview-header">
-                    <h3>联网搜索结果</h3>
-                    <button type="button" id="workflow-preview-toggle" class="collapse-toggle" aria-expanded="false" aria-controls="workflow-search-preview">展开全部</button>
-                </div>
-                <div id="workflow-search-preview" class="workflow-search-preview collapsed" aria-live="polite"></div>
-            </section>
-
             <form id="query-form" class="composer" autocomplete="off">
                 <div class="composer-input">
                     <textarea
@@ -95,6 +71,16 @@
                                     </label>
                                 </div>
                             </div>
+                            <div class="force-search-wrapper hidden" id="force-search-wrapper">
+                                <button
+                                    type="button"
+                                    id="force-search-button"
+                                    class="force-search-button"
+                                    aria-pressed="false"
+                                    title="跳过搜索决策，直接进入关键词生成"
+                                >强制搜索</button>
+                                <span class="force-search-hint">跳过是否搜索判断</span>
+                            </div>
                         </div>
                     </div>
 
@@ -140,7 +126,7 @@
                                 name="search_total_limit"
                                 min="1"
                                 max="40"
-                                value="40"
+                                value="5"
                                 inputmode="numeric"
                             >
                         </label>
@@ -153,7 +139,7 @@
                                 name="search_source_limit"
                                 min="1"
                                 max="20"
-                                value="10"
+                                value="5"
                                 inputmode="numeric"
                             >
                         </label>
@@ -166,7 +152,7 @@
                                 name="search_reference_limit"
                                 min="1"
                                 max="20"
-                                value="10"
+                                value="5"
                                 inputmode="numeric"
                             >
                         </label>

@@ -95,8 +95,7 @@
                 "display_in_response": false
             },
             "available_models": [
-                "MiniMax-M2",
-                "MiniMax-M2-Stable"
+                "MiniMax-M2"
             ]
         }
     }

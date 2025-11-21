@@ -235,6 +235,7 @@ def build_pipeline(
         configured_search_sources=configured_sources,
         show_timings=show_timings,
         google_api_key=google_key,
+        finnhub_api_key=(config.get("FINNHUB_API_KEY") or os.environ.get("FINNHUB_API_KEY")),
     )
 
 
@@ -343,6 +344,18 @@ def answer() -> Any:
         legacy_mode = (payload.get("mode") or "search").strip().lower()
         allow_search = legacy_mode != "local"
 
+    def _coerce_bool(raw_value: Any) -> bool:
+        if isinstance(raw_value, bool):
+            return raw_value
+        if isinstance(raw_value, str):
+            normalized = raw_value.strip().lower()
+            return normalized in {"true", "1", "yes", "y", "on"}
+        if isinstance(raw_value, (int, float)):
+            return bool(raw_value)
+        return False
+
+    force_search = _coerce_bool(payload.get("force_search")) and allow_search
+
     try:
         # Support both provider and model parameters for backward compatibility
         model = payload.get("model") or payload.get("provider")
@@ -397,6 +410,7 @@ def answer() -> Any:
             temperature=float(payload.get("temperature")) if payload.get("temperature") else 0.3,
             allow_search=allow_search,
             reference_limit=reference_limit,
+            force_search=force_search,
         )
         print(f"[server] Pipeline returned result with keys: {list(result.keys()) if isinstance(result, dict) else type(result)}")
     except Exception as exc:  # pragma: no cover - propagate runtime issues

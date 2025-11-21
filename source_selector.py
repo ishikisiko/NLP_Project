@@ -238,7 +238,8 @@ class IntelligentSourceSelector:
             print(f"detected domain: {domain}")
             print("selected sources:")
             for source in sources:
-                print(f"   - {source['name']}: {source['url']}")
+                url = source.get('url', 'N/A')
+                print(f"   - {source['name']}: {url}")
         except (UnicodeEncodeError, UnicodeDecodeError):
             # 在不支持UTF-8的环境中静默跳过打印
             pass
@@ -546,6 +547,20 @@ class IntelligentSourceSelector:
         return None
 
     def _extract_finance_symbol(self, query: str) -> str:
+        # 加密货币常见名称到符号映射
+        crypto_map = {
+            "比特币": "BTC",
+            "比特幣": "BTC",
+            "以太坊": "ETH",
+            "狗狗币": "DOGE",
+            "莱特币": "LTC",
+            "索拉纳": "SOL",
+        }
+        query_lower = query.lower()
+        for cname, symbol in crypto_map.items():
+            if cname.lower() in query_lower:
+                return symbol
+        
         # 简单正则匹配常见股票代码，如 AAPL, TSLA, 600000 等
         match_us = re.search(r'\b([A-Z]{1,5})\b(?=\s*(?:股价|股票|price|stock))', query, re.IGNORECASE)
         if match_us:
@@ -558,11 +573,12 @@ class IntelligentSourceSelector:
         # LLM fallback
         if self.use_llm and self.llm_client:
             prompt = (
-                "从用户问题中提取股票代码（美股如AAPL，A股如600000），输出JSON {\"symbol\": \"AAPL\"}。"
+                "从用户问题中提取股票代码或加密货币符号（美股如AAPL，A股如600000，加密货币如BTC），"
+                "输出JSON {\"symbol\": \"AAPL\" 或 \"BTC\" 等}。"
                 "无法提取返回空字符串。\n\n用户问题：" + query
             )
             response = self.llm_client.chat(
-                system_prompt="Extract stock symbol.",
+                system_prompt="Extract stock or crypto symbol.",
                 user_prompt=prompt,
                 max_tokens=100,
                 temperature=0.0,
@@ -696,6 +712,47 @@ class IntelligentSourceSelector:
                     label="yahoo_fin Quote",
                     duration_ms=duration_ms,
                 )
+
+    def _query_stock_price(
+        self,
+        symbol: str,
+        timing_recorder: Optional[TimingRecorder] = None,
+    ) -> Optional[Dict[str, Any]]:
+        """尝试按优先级获取股票/加密货币报价：Finnhub -> yfinance -> yahoo_fin。
+
+        返回第一个成功的、非 error 的结果字典；若所有后端都失败，返回最后一个错误结构。
+        """
+        last_error: Optional[Dict[str, Any]] = None
+
+        # 1) Finnhub（如果配置了 api key）
+        if self.finnhub_api_key:
+            try:
+                quote = self._call_finnhub_quote(symbol, timing_recorder=timing_recorder)
+                if quote and not quote.get("error"):
+                    return quote
+                last_error = quote or {"error": "finnhub_no_response"}
+            except Exception as exc:
+                last_error = {"error": str(exc)}
+
+        # 2) yfinance
+        try:
+            quote = self._call_yfinance_quote(symbol, timing_recorder=timing_recorder)
+            if quote and not quote.get("error"):
+                return quote
+            last_error = quote or {"error": "yfinance_no_data"}
+        except Exception as exc:
+            last_error = {"error": str(exc)}
+
+        # 3) yahoo_fin
+        try:
+            quote = self._call_yahoo_fin_quote(symbol, timing_recorder=timing_recorder)
+            if quote and not quote.get("error"):
+                return quote
+            last_error = quote or {"error": "yahoo_fin_no_data"}
+        except Exception as exc:
+            last_error = {"error": str(exc)}
+
+        return last_error or {"error": "no_price_providers_available"}
 
     def _call_sportsdb_events(
         self,
@@ -841,6 +898,63 @@ class IntelligentSourceSelector:
             )
         except Exception:
             return f"{location_hint} 天气数据获取成功，但解析失败。"
+
+    def _format_finance_answer(self, symbol: str, quote: Dict[str, Any]) -> str:
+        """格式化股票/加密货币报价为可读的中文回答。
+
+        支持多种后端返回结构（finnhub、yfinance、yahoo_fin），尽量提取常见字段。
+        """
+        if not isinstance(quote, dict):
+            return f"{symbol} 报价获取失败：无效返回格式。"
+
+        if quote.get("error"):
+            return f"{symbol} 报价获取失败：{quote.get('error')}"
+
+        # 常见字段映射
+        def _num(val: Any) -> Optional[float]:
+            try:
+                return float(val)
+            except Exception:
+                return None
+
+        # Finnhub: c (current), h (high), l (low), o (open), pc (prev close)
+        c = _num(quote.get("c") or quote.get("currentPrice") or quote.get("price"))
+        h = _num(quote.get("h") or quote.get("dayHigh") or quote.get("high"))
+        l = _num(quote.get("l") or quote.get("dayLow") or quote.get("low"))
+        o = _num(quote.get("o") or quote.get("open") or quote.get("regularMarketOpen"))
+        pc = _num(quote.get("pc") or quote.get("previousClose") or quote.get("regularMarketPreviousClose"))
+
+        parts: List[str] = []
+        if c is not None:
+            parts.append(f"当前价 {c:g}")
+        if o is not None:
+            parts.append(f"开盘 {o:g}")
+        if h is not None and l is not None:
+            parts.append(f"区间 {l:g} - {h:g}")
+        else:
+            if h is not None:
+                parts.append(f"最高 {h:g}")
+            if l is not None:
+                parts.append(f"最低 {l:g}")
+        if pc is not None:
+            parts.append(f"昨收 {pc:g}")
+
+        if not parts:
+            # 最后尝试把整个 quote 转为简短字符串
+            try:
+                summary = json.dumps(quote, ensure_ascii=False)
+                return f"{symbol} 报价：{summary}"
+            except Exception:
+                return f"{symbol} 报价获取成功，但无法解析具体字段。"
+
+        source = "unknown"
+        # 尝试推断数据来源
+        if any(k in quote for k in ("c", "pc")):
+            source = "Finnhub/yfinance"
+        elif any(k in quote for k in ("currentPrice", "regularMarketPrice")):
+            source = "yfinance"
+
+        return f"{symbol}：" + "，".join(parts) + f"（数据源: {source}）"
 
 def test_basic_functionality():
     """基础功能测试"""

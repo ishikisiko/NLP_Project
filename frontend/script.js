@@ -18,6 +18,8 @@ document.addEventListener("DOMContentLoaded", () => {
     const searchSourceMenu = document.getElementById("search-source-menu");
     const statusMessage = document.getElementById("status-message");
     const sendButton = form.querySelector(".send-btn");
+    const forceSearchWrapper = document.getElementById("force-search-wrapper");
+    const forceSearchButton = document.getElementById("force-search-button");
     const uploadButton = document.getElementById("upload-button");
     const fileInput = document.getElementById("file-input");
     const fileList = document.getElementById("file-list");
@@ -40,237 +42,68 @@ document.addEventListener("DOMContentLoaded", () => {
         loading: false,
         searchSources: new Set(),
         timingOptions: new Set(['total', 'search', 'llm']), // 默认全部显示
+        forceSearch: false,
     };
 
-    const workflowPanel = document.getElementById("workflow-panel");
-    const workflowSearchPreview = document.getElementById("workflow-search-preview");
-    const workflowPreviewToggle = document.getElementById("workflow-preview-toggle");
-    const workflowStageStatusEls = {
-        search: document.getElementById("workflow-stage-search-status"),
-        llm: document.getElementById("workflow-stage-llm-status"),
-    };
-    const workflowStages = {
-        search: workflowPanel?.querySelector("[data-stage='search']"),
-        llm: workflowPanel?.querySelector("[data-stage='llm']"),
-    };
-    let workflowPreviewCollapsed = true;
-    let workflowPreviewItemCount = 0;
     let collapsibleSectionId = 0;
+    let loadingInterval = null;
 
-    function updateWorkflowPreviewToggleLabel(count) {
-        if (typeof count === "number") {
-            workflowPreviewItemCount = count;
-        }
-        if (!workflowPreviewToggle) return;
-        const suffix = workflowPreviewItemCount > 0 ? ` (${workflowPreviewItemCount})` : "";
-        const base = workflowPreviewCollapsed ? "展开全部" : "收起";
-        workflowPreviewToggle.textContent = `${base}${suffix}`;
-    }
-
-    function setWorkflowPreviewCollapsed(collapsed) {
-        workflowPreviewCollapsed = collapsed;
-        if (workflowSearchPreview) {
-            workflowSearchPreview.classList.toggle("collapsed", collapsed);
-            workflowSearchPreview.setAttribute("aria-hidden", collapsed ? "true" : "false");
-        }
-        if (workflowPreviewToggle) {
-            workflowPreviewToggle.setAttribute("aria-expanded", collapsed ? "false" : "true");
-        }
-        updateWorkflowPreviewToggleLabel();
-    }
-
-    function updateWorkflowStage(stage, options = {}) {
-        const stageNode = workflowStages[stage];
-        if (!stageNode) return;
-        stageNode.classList.toggle("active", Boolean(options.active));
-        stageNode.classList.toggle("completed", Boolean(options.completed));
-        const statusNode = workflowStageStatusEls[stage];
-        if (statusNode && typeof options.status === "string") {
-            statusNode.textContent = options.status;
-        }
-    }
-
-    function showWorkflowPreviewNotice(text = "搜索结果将在此展示") {
-        if (!workflowSearchPreview) return;
-        workflowSearchPreview.innerHTML = "";
-        const notice = document.createElement("div");
-        notice.className = "workflow-preview-empty";
-        notice.textContent = text;
-        workflowSearchPreview.appendChild(notice);
-        workflowSearchPreview.classList.add("empty");
-        updateWorkflowPreviewToggleLabel(0);
-        setWorkflowPreviewCollapsed(true);
-    }
-
-    function renderWorkflowSearchPreview(data) {
-        if (!workflowSearchPreview) return;
-        const searchHits = Array.isArray(data?.search_hits) ? data.search_hits : [];
-        const docs = Array.isArray(data?.retrieved_docs) ? data.retrieved_docs : [];
-        const sections = [];
-        const totalCount = searchHits.length + docs.length;
-
-        if (searchHits.length > 0) {
-            const list = document.createElement("div");
-            list.className = "workflow-preview-list";
-            searchHits.slice(0, 4).forEach((hit, index) => {
-                const item = document.createElement("div");
-                item.className = "workflow-preview-item";
-
-                const title = document.createElement("strong");
-                title.textContent = hit.title || hit.url || `搜索结果 ${index + 1}`;
-                item.appendChild(title);
-
-                if (hit.url) {
-                    const link = document.createElement("a");
-                    link.className = "workflow-preview-link";
-                    link.href = hit.url;
-                    link.target = "_blank";
-                    link.rel = "noopener noreferrer";
-                    link.textContent = hit.url;
-                    item.appendChild(link);
+    function startLoadingAnimation(messageEl, isSearchEnabled) {
+        const bubble = messageEl.querySelector(".bubble");
+        // Remove the CSS-based loader class if it exists, as we are using custom HTML
+        messageEl.classList.remove("pending"); 
+        
+        // Initial Skeleton HTML
+        bubble.innerHTML = `
+            <div class="skeleton-loader">
+                <div class="skeleton-status">正在分析您的提问...</div>
+                <div class="skeleton-lines">
+                    <div class="skeleton-line" style="width: 92%"></div>
+                    <div class="skeleton-line" style="width: 75%"></div>
+                    <div class="skeleton-line" style="width: 88%"></div>
+                </div>
+            </div>
+        `;
+        
+        const statusEl = bubble.querySelector(".skeleton-status");
+        const steps = isSearchEnabled 
+            ? [
+                { time: 1500, text: "正在联网搜索相关信息..." },
+                { time: 4500, text: "正在阅读并理解搜索结果..." },
+                { time: 8000, text: "正在整合信息并生成回答..." },
+                { time: 15000, text: "内容较多，请耐心等待..." }
+              ]
+            : [
+                { time: 1000, text: "正在检索本地知识库..." },
+                { time: 3000, text: "正在生成回答..." },
+                { time: 8000, text: "正在组织语言..." }
+              ];
+              
+        const startTime = Date.now();
+        
+        if (loadingInterval) clearInterval(loadingInterval);
+        
+        loadingInterval = setInterval(() => {
+            const elapsed = Date.now() - startTime;
+            let currentText = null;
+            // Find the latest step that matches the elapsed time
+            for (const step of steps) {
+                if (elapsed >= step.time) {
+                    currentText = step.text;
                 }
+            }
+            
+            if (currentText && statusEl && statusEl.textContent !== currentText) {
+                statusEl.textContent = currentText;
+            }
+        }, 500);
+    }
 
-                const snippet = document.createElement("div");
-                snippet.className = "workflow-preview-snippet";
-                snippet.textContent = formatter.snippet(hit.snippet, 140);
-                item.appendChild(snippet);
-
-                list.appendChild(item);
-            });
-
-            const group = document.createElement("div");
-            group.className = "workflow-preview-group";
-            const heading = document.createElement("h4");
-            heading.textContent = "搜索条目";
-            group.appendChild(heading);
-            group.appendChild(list);
-            sections.push(group);
+    function stopLoadingAnimation() {
+        if (loadingInterval) {
+            clearInterval(loadingInterval);
+            loadingInterval = null;
         }
-
-        if (docs.length > 0) {
-            const list = document.createElement("div");
-            list.className = "workflow-preview-list";
-            docs.slice(0, 3).forEach((doc, index) => {
-                const item = document.createElement("div");
-                item.className = "workflow-preview-item";
-
-                const title = document.createElement("strong");
-                title.textContent = doc.source || `文档片段 ${index + 1}`;
-                item.appendChild(title);
-
-                const snippet = document.createElement("div");
-                snippet.className = "workflow-preview-snippet";
-                snippet.textContent = formatter.snippet(doc.content || doc.snippet || "", 120);
-                item.appendChild(snippet);
-
-                list.appendChild(item);
-            });
-
-            const group = document.createElement("div");
-            group.className = "workflow-preview-group";
-            const heading = document.createElement("h4");
-            heading.textContent = "本地文档片段";
-            group.appendChild(heading);
-            group.appendChild(list);
-            sections.push(group);
-        }
-
-        if (!sections.length) {
-            showWorkflowPreviewNotice("未返回搜索/文档结果");
-            return;
-        }
-
-        workflowSearchPreview.classList.remove("empty");
-        workflowSearchPreview.innerHTML = "";
-        sections.forEach((section) => workflowSearchPreview.appendChild(section));
-        updateWorkflowPreviewToggleLabel(totalCount);
-        setWorkflowPreviewCollapsed(true);
-    }
-
-    function startWorkflowSearchStage() {
-        updateWorkflowStage("search", {
-            active: true,
-            completed: false,
-            status: "正在等待搜索结果…",
-        });
-        updateWorkflowStage("llm", {
-            active: false,
-            completed: false,
-            status: "未开始",
-        });
-        showWorkflowPreviewNotice("搜索结果将在此展示");
-    }
-
-    function disableWorkflowSearchStage() {
-        updateWorkflowStage("search", {
-            active: false,
-            completed: false,
-            status: "联网搜索未开启",
-        });
-        updateWorkflowStage("llm", {
-            active: true,
-            completed: false,
-            status: "正在等待LLM回应…",
-        });
-        showWorkflowPreviewNotice("联网搜索已关闭");
-    }
-
-    function markWorkflowSearchResults(data) {
-        const searchHits = Array.isArray(data?.search_hits) ? data.search_hits.length : 0;
-        const docs = Array.isArray(data?.retrieved_docs) ? data.retrieved_docs.length : 0;
-        const total = searchHits + docs;
-        updateWorkflowStage("search", {
-            active: false,
-            completed: true,
-            status: total > 0 ? `已获取 ${total} 条结果` : "未找到搜索结果",
-        });
-        renderWorkflowSearchPreview(data);
-    }
-
-    function activateLLMStage(statusText = "正在等待LLM回应…") {
-        updateWorkflowStage("llm", {
-            active: true,
-            completed: false,
-            status: statusText,
-        });
-    }
-
-    function finalizeWorkflowStage() {
-        updateWorkflowStage("llm", {
-            active: false,
-            completed: true,
-            status: "LLM 回答已生成",
-        });
-    }
-
-    function resetWorkflowPanel() {
-        updateWorkflowStage("search", {
-            active: false,
-            completed: false,
-            status: "等待触发",
-        });
-        updateWorkflowStage("llm", {
-            active: false,
-            completed: false,
-            status: "未开始",
-        });
-        showWorkflowPreviewNotice("搜索结果将在此展示");
-    }
-
-    function markWorkflowError(message = "阶段异常") {
-        if (searchToggle.checked) {
-            updateWorkflowStage("search", {
-                active: false,
-                completed: true,
-                status: "搜索阶段中断",
-            });
-        }
-        updateWorkflowStage("llm", {
-            active: false,
-            completed: true,
-            status: message,
-        });
-        showWorkflowPreviewNotice("搜索结果不可用");
     }
 
     function refreshSearchSourceButtonLabel() {
@@ -315,6 +148,24 @@ document.addEventListener("DOMContentLoaded", () => {
             }
         }
         setSearchLimitInputsEnabled(shouldShow);
+        updateForceSearchVisibility();
+    }
+
+    function setForceSearchState(enabled) {
+        state.forceSearch = Boolean(enabled);
+        if (forceSearchButton) {
+            forceSearchButton.setAttribute("aria-pressed", state.forceSearch ? "true" : "false");
+            forceSearchButton.classList.toggle("active", state.forceSearch);
+        }
+    }
+
+    function updateForceSearchVisibility() {
+        if (!forceSearchWrapper) return;
+        const shouldShow = searchToggle.checked;
+        forceSearchWrapper.classList.toggle("hidden", !shouldShow);
+        if (!shouldShow && state.forceSearch) {
+            setForceSearchState(false);
+        }
     }
 
     function initializeSearchSources() {
@@ -765,32 +616,135 @@ document.addEventListener("DOMContentLoaded", () => {
         return section;
     }
 
-    function buildTimingExtras(timings) {
-        if (!timings || typeof timings !== "object") return null;
-        const searchSources = Array.isArray(timings.search_sources) ? timings.search_sources : [];
-        const llmCalls = Array.isArray(timings.llm_calls) ? timings.llm_calls : [];
-        const hasTotal = typeof timings.total_ms === "number";
-        if (!hasTotal && searchSources.length === 0 && llmCalls.length === 0) {
+    function buildTimingExtras(timings, control, searchQuery, retrievedDocs) {
+        const safeTimings = (timings && typeof timings === "object") ? timings : {};
+        const searchSources = Array.isArray(safeTimings.search_sources) ? safeTimings.search_sources : [];
+        const llmCalls = Array.isArray(safeTimings.llm_calls) ? safeTimings.llm_calls : [];
+        const hasTotal = typeof safeTimings.total_ms === "number";
+        
+        // Check for keywords
+        const keywords = (control && Array.isArray(control.keywords)) ? control.keywords : [];
+        const hasKeywords = keywords.length > 0;
+        const hasSearchQuery = !!searchQuery;
+
+        // Build badges (control flags)
+        const controlFlags = document.createElement("div");
+        controlFlags.className = "control-flags";
+
+        if (control.search_allowed === false) {
+            controlFlags.appendChild(createBadge("联网：关闭"));
+        } else if (control.search_performed) {
+            controlFlags.appendChild(createBadge("联网搜索：已触发"));
+        } else if (control.search_allowed) {
+            controlFlags.appendChild(createBadge("联网搜索：未触发"));
+        }
+
+        if (control.force_search_enabled) {
+            controlFlags.appendChild(createBadge("强制搜索"));
+        }
+
+        if (control.local_docs_present) {
+            controlFlags.appendChild(createBadge("本地文档：可用"));
+        } else if (Array.isArray(retrievedDocs) && retrievedDocs.length === 0) {
+            controlFlags.appendChild(createBadge("本地文档：为空"));
+        }
+
+        if (control.hybrid_mode) {
+            controlFlags.appendChild(createBadge("混合检索"));
+        }
+
+        if (typeof control.search_total_limit === "number") {
+            controlFlags.appendChild(createBadge(`汇总上限：${control.search_total_limit}`));
+        }
+
+        if (typeof control.search_per_source_limit === "number") {
+            controlFlags.appendChild(createBadge(`单源上限：${control.search_per_source_limit}`));
+        }
+
+        if (typeof control.search_reference_limit === "number") {
+            controlFlags.appendChild(createBadge(`参考链接：${control.search_reference_limit}`));
+        }
+
+        const hasBadges = controlFlags.children.length > 0;
+
+        if (!hasTotal && searchSources.length === 0 && llmCalls.length === 0 && !hasKeywords && !hasSearchQuery && !hasBadges) {
             return null;
         }
 
-        const wrapper = document.createElement("div");
-        wrapper.className = "message-extras timing-extras";
+        const contentWrapper = document.createElement("div");
+        
+        // Add Search Query
+        if (hasSearchQuery) {
+            const queryDiv = document.createElement("div");
+            queryDiv.style.marginBottom = "12px";
+            queryDiv.style.paddingBottom = "12px";
+            queryDiv.style.borderBottom = "1px solid var(--border)";
+            
+            const label = document.createElement("div");
+            label.textContent = "搜索语";
+            label.style.fontSize = "0.85rem";
+            label.style.fontWeight = "600";
+            label.style.color = "var(--muted)";
+            label.style.marginBottom = "6px";
+            
+            const text = document.createElement("div");
+            text.textContent = searchQuery;
+            text.style.fontSize = "0.9rem";
+            text.style.color = "var(--text)";
+            text.style.lineHeight = "1.5";
+            
+            queryDiv.appendChild(label);
+            queryDiv.appendChild(text);
+            contentWrapper.appendChild(queryDiv);
+        }
 
-        const heading = document.createElement("h4");
-        heading.textContent = "响应时间";
-        wrapper.appendChild(heading);
+        // Add Keywords and Badges
+        if (hasKeywords || hasBadges) {
+            const keywordsDiv = document.createElement("div");
+            keywordsDiv.style.marginBottom = "12px";
+            keywordsDiv.style.paddingBottom = "12px";
+            keywordsDiv.style.borderBottom = "1px solid var(--border)";
+            
+            const label = document.createElement("div");
+            label.textContent = "搜索关键词与参数";
+            label.style.fontSize = "0.85rem";
+            label.style.fontWeight = "600";
+            label.style.color = "var(--muted)";
+            label.style.marginBottom = "6px";
+            
+            keywordsDiv.appendChild(label);
+
+            if (hasKeywords) {
+                const text = document.createElement("div");
+                text.textContent = keywords.join("，");
+                text.style.fontSize = "0.9rem";
+                text.style.color = "var(--text)";
+                text.style.lineHeight = "1.5";
+                text.style.marginBottom = hasBadges ? "8px" : "0";
+                keywordsDiv.appendChild(text);
+            }
+
+            if (hasBadges) {
+                keywordsDiv.appendChild(controlFlags);
+            }
+            
+            contentWrapper.appendChild(keywordsDiv);
+        }
 
         // 根据用户选择显示不同的时间信息
         if (hasTotal && state.timingOptions.has('total')) {
             const totalRow = document.createElement("div");
             totalRow.className = "timing-total";
-            totalRow.textContent = `总体: ${timings.total_ms.toFixed(2)} ms`;
-            wrapper.appendChild(totalRow);
+            totalRow.textContent = `总体: ${safeTimings.total_ms.toFixed(2)} ms`;
+            contentWrapper.appendChild(totalRow);
         }
 
+        // 创建一个容器用于水平排列搜索源和LLM调用
+        const sectionsContainer = document.createElement("div");
+        sectionsContainer.className = "timing-sections-container";
+
         const renderSection = (title, entries, option) => {
-            if (!entries.length || !state.timingOptions.has(option)) return;
+            if (!entries.length || !state.timingOptions.has(option)) return null;
             const section = document.createElement("div");
             section.className = "timing-section";
             const sectionTitle = document.createElement("strong");
@@ -822,10 +776,11 @@ document.addEventListener("DOMContentLoaded", () => {
             });
 
             section.appendChild(list);
-            wrapper.appendChild(section);
+            return section;
         };
 
-        renderSection("搜索源", searchSources, 'search');
+        // 渲染搜索源和LLM调用部分
+        const searchSection = renderSection("搜索源", searchSources, 'search');
         const normalizedLLM = llmCalls.map((entry) => {
             const provider = entry.provider || "";
             const model = entry.model || "";
@@ -835,14 +790,29 @@ document.addEventListener("DOMContentLoaded", () => {
                 label: suffix ? `${entry.label || "LLM"}（${suffix}）` : entry.label || "LLM",
             };
         });
-        renderSection("LLM 调用", normalizedLLM, 'llm');
+        const llmSection = renderSection("LLM 调用", normalizedLLM, 'llm');
 
-        return wrapper;
+        // 将搜索源和LLM调用添加到水平容器中
+        if (searchSection || llmSection) {
+            contentWrapper.appendChild(sectionsContainer);
+            if (searchSection) sectionsContainer.appendChild(searchSection);
+            if (llmSection) sectionsContainer.appendChild(llmSection);
+        }
+
+        return createCollapsibleSection(
+            "响应时间详情", 
+            contentWrapper, 
+            { 
+                sectionClass: "timing-extras",
+                collapsed: true
+            }
+        );
     }
 
     function buildExtras(data) {
         const fragments = [];
 
+        // 1. 首先添加搜索结果和本地文档
         if (Array.isArray(data.search_hits) && data.search_hits.length > 0) {
             const list = document.createElement("ol");
             list.className = "source-list";
@@ -907,6 +877,17 @@ document.addEventListener("DOMContentLoaded", () => {
             fragments.push(wrapper);
         }
 
+        // 2. 然后添加关键词模块 (已移入响应时间详情)
+        const control = data.control || {};
+
+        // 3. 最后添加响应时间模块
+        // 确保即使没有时间数据，只要有关键词或搜索语，也显示该模块
+        const timingExtras = buildTimingExtras(data.response_times, control, data.search_query, data.retrieved_docs);
+        if (timingExtras) {
+            fragments.push(timingExtras);
+        }
+
+        // 4. 添加错误和警告信息
         const metaFragments = [];
         if (data.llm_error) {
             const errorBox = document.createElement("div");
@@ -936,60 +917,6 @@ document.addEventListener("DOMContentLoaded", () => {
             });
         }
 
-        const control = data.control || {};
-        const controlFlags = document.createElement("div");
-        controlFlags.className = "control-flags";
-
-        if (control.search_allowed === false) {
-            controlFlags.appendChild(createBadge("联网：关闭"));
-        } else if (control.search_performed) {
-            controlFlags.appendChild(createBadge("联网搜索：已触发"));
-        } else if (control.search_allowed) {
-            controlFlags.appendChild(createBadge("联网搜索：未触发"));
-        }
-
-        if (control.local_docs_present) {
-            controlFlags.appendChild(createBadge("本地文档：可用"));
-        } else if (Array.isArray(data.retrieved_docs) && data.retrieved_docs.length === 0) {
-            controlFlags.appendChild(createBadge("本地文档：为空"));
-        }
-
-        if (control.hybrid_mode) {
-            controlFlags.appendChild(createBadge("混合检索"));
-        }
-
-        if (Array.isArray(control.keywords) && control.keywords.length > 0) {
-            controlFlags.appendChild(createBadge(`关键词：${control.keywords.join("，")}`));
-        }
-
-        if (data.search_query) {
-            controlFlags.appendChild(createBadge(`搜索语：${data.search_query}`));
-        }
-
-        if (typeof control.search_total_limit === "number") {
-            controlFlags.appendChild(createBadge(`汇总上限：${control.search_total_limit}`));
-        }
-
-        if (typeof control.search_per_source_limit === "number") {
-            controlFlags.appendChild(createBadge(`单源上限：${control.search_per_source_limit}`));
-        }
-
-        if (typeof control.search_reference_limit === "number") {
-            controlFlags.appendChild(createBadge(`参考链接：${control.search_reference_limit}`));
-        }
-
-        if (controlFlags.children.length > 0) {
-            const wrapper = document.createElement("div");
-            wrapper.className = "message-extras";
-            wrapper.appendChild(controlFlags);
-            fragments.push(wrapper);
-        }
-
-        const timingExtras = buildTimingExtras(data.response_times);
-        if (timingExtras) {
-            fragments.push(timingExtras);
-        }
-
         if (metaFragments.length > 0) {
             const wrapper = document.createElement("div");
             wrapper.className = "message-extras";
@@ -1007,6 +934,7 @@ document.addEventListener("DOMContentLoaded", () => {
     }
 
     function setAssistantMessage(messageEl, data) {
+        stopLoadingAnimation();
         messageEl.classList.remove("pending");
         const bubble = messageEl.querySelector(".bubble");
         
@@ -1024,24 +952,16 @@ document.addEventListener("DOMContentLoaded", () => {
             console.warn("No answer in response data:", data);
         }
         
+        // Create a container for the main answer content
+        const contentContainer = document.createElement('div');
+        contentContainer.className = 'response-content';
+        contentContainer.innerHTML = renderMarkdown(answer || "未能生成答案");
+        bubble.appendChild(contentContainer);
+
+        // Create a container for sources and timing info to be displayed after the answer
         const extras = buildExtras(data);
 
-        // Create a container for sources
-        if (extras) {
-            const sourcesContainer = document.createElement('div');
-            sourcesContainer.className = 'response-sources';
-            sourcesContainer.appendChild(extras);
-            const syncSourcesExpansion = () => {
-                const hasExpandedSection = Boolean(sourcesContainer.querySelector('.collapsible-section:not(.collapsed)'));
-                const hasAlwaysVisible = Boolean(sourcesContainer.querySelector('.message-extras:not(.collapsible-section)'));
-                sourcesContainer.classList.toggle('expanded', hasExpandedSection || hasAlwaysVisible);
-            };
-            sourcesContainer.addEventListener('collapsible-toggle', syncSourcesExpansion);
-            syncSourcesExpansion();
-            bubble.appendChild(sourcesContainer);
-        }
-
-        // Add a separator if both sources and content exist
+        // Add a separator if both content and extras exist
         if (extras && answer) {
             const separator = document.createElement('hr');
             separator.style.border = 'none';
@@ -1050,11 +970,10 @@ document.addEventListener("DOMContentLoaded", () => {
             bubble.appendChild(separator);
         }
 
-        // Create a container for the main answer content
-        const contentContainer = document.createElement('div');
-        contentContainer.className = 'response-content';
-        contentContainer.innerHTML = renderMarkdown(answer || "未能生成答案");
-        bubble.appendChild(contentContainer);
+        // Add extras (sources, keywords, timing info) after the main content
+        if (extras) {
+            bubble.appendChild(extras);
+        }
 
         // Remove any old extras that might be outside the bubble
         const oldExtras = messageEl.querySelectorAll(".message-extras");
@@ -1068,6 +987,7 @@ document.addEventListener("DOMContentLoaded", () => {
     }
 
     function setAssistantError(messageEl, message) {
+        stopLoadingAnimation();
         messageEl.classList.remove("pending");
         const bubble = messageEl.querySelector(".bubble");
         bubble.textContent = message;
@@ -1086,6 +1006,9 @@ document.addEventListener("DOMContentLoaded", () => {
         state.loading = isLoading;
         sendButton.disabled = isLoading;
         sendButton.classList.toggle("loading", isLoading);
+        if (forceSearchButton) {
+            forceSearchButton.disabled = isLoading;
+        }
         if (isLoading) {
             closeSearchSourceMenu();
         }
@@ -1093,6 +1016,9 @@ document.addEventListener("DOMContentLoaded", () => {
 
     function updateStatusFromResponse(data) {
         const parts = [];
+        if (data.control && data.control.force_search_enabled) {
+            parts.push("强制联网：已启用");
+        }
         if (data.control && data.control.decision && data.control.decision.reason) {
             parts.push(`路由：${data.control.decision.reason}`);
         }
@@ -1126,15 +1052,16 @@ document.addEventListener("DOMContentLoaded", () => {
         }
 
         const userMessage = appendMessage("user", query);
-        const assistantMessage = appendMessage("assistant", "正在思考…");
-        assistantMessage.classList.add("pending");
+        const assistantMessage = appendMessage("assistant", "");
+        // assistantMessage.classList.add("pending"); // Replaced by skeleton loader
+        startLoadingAnimation(assistantMessage, searchToggle.checked);
 
         setLoading(true);
         if (searchToggle.checked) {
-            startWorkflowSearchStage();
-            statusMessage.textContent = "正在等待搜索结果…";
+            statusMessage.textContent = state.forceSearch
+                ? "强制联网：直接进入关键词阶段…"
+                : "正在等待搜索结果…";
         } else {
-            disableWorkflowSearchStage();
             statusMessage.textContent = "正在等待LLM回应…";
         }
         textarea.value = "";
@@ -1149,6 +1076,9 @@ document.addEventListener("DOMContentLoaded", () => {
         }
         if (searchToggle.checked && state.searchSources.size > 0) {
             payload.search_sources = Array.from(state.searchSources);
+        }
+        if (searchToggle.checked && state.forceSearch) {
+            payload.force_search = true;
         }
         if (searchToggle.checked) {
             normalizeSearchLimits();
@@ -1216,22 +1146,17 @@ document.addEventListener("DOMContentLoaded", () => {
             }
 
             if (searchToggle.checked) {
-                markWorkflowSearchResults(data);
-                activateLLMStage("搜索结果已返回，正在等待LLM回应…");
                 statusMessage.textContent = "搜索结果已返回，正在等待LLM回应…";
             } else {
-                activateLLMStage("LLM 正在生成回答…");
                 statusMessage.textContent = "正在等待LLM回应…";
             }
 
             console.log("Setting assistant message with data");
             setAssistantMessage(assistantMessage, data);
-            finalizeWorkflowStage();
             updateStatusFromResponse(data);
         } catch (error) {
             console.error("Request exception:", error);
             console.error("Error stack:", error.stack);
-            markWorkflowError("请求阶段异常");
             statusMessage.textContent = "请求失败，请重试";
             setAssistantError(assistantMessage, "抱歉，暂时无法完成请求。");
         } finally {
@@ -1343,6 +1268,17 @@ document.addEventListener("DOMContentLoaded", () => {
         });
     }
 
+    if (forceSearchButton) {
+        forceSearchButton.addEventListener("click", () => {
+            if (!searchToggle.checked || state.loading) return;
+            const nextState = !state.forceSearch;
+            setForceSearchState(nextState);
+            statusMessage.textContent = nextState
+                ? "强制联网搜索已开启"
+                : "强制联网搜索已关闭";
+        });
+    }
+
     for (const checkbox of searchSourceCheckboxes) {
         checkbox.addEventListener("change", handleSearchSourceChange);
     }
@@ -1376,11 +1312,11 @@ document.addEventListener("DOMContentLoaded", () => {
     searchToggle.addEventListener("change", () => {
         updateSearchSourceVisibility();
         if (searchToggle.checked) {
-            resetWorkflowPanel();
+            setForceSearchState(false);
             statusMessage.textContent = "联网搜索已启用";
         } else {
-            disableWorkflowSearchStage();
-            statusMessage.textContent = "联网搜索已关闭";
+            setForceSearchState(false);
+            statusMessage.textContent = "正在等待LLM回应…";
         }
     });
 
@@ -1405,12 +1341,6 @@ document.addEventListener("DOMContentLoaded", () => {
         referenceLimitInput.addEventListener("change", normalizeSearchLimits);
     }
 
-    if (workflowPreviewToggle) {
-        workflowPreviewToggle.addEventListener("click", () => {
-            setWorkflowPreviewCollapsed(!workflowPreviewCollapsed);
-        });
-    }
-
     ensurePlaceholder();
     fetchFiles();
     loadAvailableModels();
@@ -1420,5 +1350,5 @@ document.addEventListener("DOMContentLoaded", () => {
     updateSearchSourceVisibility();
     updateTimingVisibility();
     normalizeSearchLimits();
-    resetWorkflowPanel();
+    setForceSearchState(false);
 });

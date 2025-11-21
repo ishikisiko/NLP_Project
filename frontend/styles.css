@@ -272,38 +272,23 @@ body {
 
 .message.assistant .bubble {
     display: flex;
-    gap: 24px;
-    align-items: stretch;
-    flex-wrap: wrap;
+    flex-direction: column;
+    gap: 16px;
 }
 
 .message.assistant .response-content {
-    flex: 2 1 420px;
-    min-width: 240px;
+    width: 100%;
 }
 
 .message.assistant .response-sources {
-    flex: 0 0 auto;
-    border-left: 1px solid var(--border);
-    padding-left: 24px;
-    max-width: 360px;
-    min-width: 0;
+    width: 100%;
     display: flex;
     flex-direction: column;
     gap: 16px;
 }
 
-.message.assistant .response-sources.expanded {
-    flex: 1 1 320px;
-}
-
-.message.assistant .response-sources:not(.expanded) {
-    border-left-color: transparent;
-    padding-left: 0;
-}
-
 .message .bubble {
-    max-width: min(720px, 90%);
+    max-width: 95%;
     background: var(--assistant-bubble);
     border-radius: 18px;
     padding: 18px 20px;
@@ -346,6 +331,72 @@ body {
     }
     50% {
         opacity: 0.9;
+    }
+}
+
+/* Skeleton Loader */
+.skeleton-loader {
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+    width: 100%;
+    min-width: 200px;
+}
+
+.skeleton-status {
+    font-size: 0.9rem;
+    color: var(--muted);
+    display: flex;
+    align-items: center;
+    gap: 8px;
+}
+
+.skeleton-status::before {
+    content: "";
+    width: 12px;
+    height: 12px;
+    border: 2px solid var(--accent);
+    border-top-color: transparent;
+    border-radius: 50%;
+    animation: spin 1s linear infinite;
+    display: inline-block;
+}
+
+.skeleton-lines {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    width: 100%;
+}
+
+.skeleton-line {
+    height: 12px;
+    background: #e2e8f0;
+    border-radius: 6px;
+    position: relative;
+    overflow: hidden;
+}
+
+.skeleton-line::after {
+    content: "";
+    position: absolute;
+    top: 0;
+    left: 0;
+    width: 100%;
+    height: 100%;
+    background: linear-gradient(
+        90deg,
+        transparent,
+        rgba(255, 255, 255, 0.6),
+        transparent
+    );
+    transform: translateX(-100%);
+    animation: shimmer 1.5s infinite;
+}
+
+@keyframes shimmer {
+    100% {
+        transform: translateX(100%);
     }
 }
 
@@ -442,6 +493,18 @@ body {
     display: flex;
     flex-direction: column;
     gap: 6px;
+}
+
+/* 将搜索源和LLM调用水平排列 */
+.timing-sections-container {
+    display: flex;
+    gap: 16px;
+    margin-top: 8px;
+}
+
+.timing-sections-container .timing-section {
+    flex: 1;
+    margin-top: 0;
 }
 
 .timing-row {
@@ -645,6 +708,48 @@ body {
     display: flex;
     align-items: center;
     gap: 12px;
+    flex-wrap: wrap;
+}
+
+.force-search-wrapper {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    margin-top: 6px;
+    flex-basis: 100%;
+}
+
+.force-search-wrapper.hidden {
+    display: none;
+}
+
+.force-search-button {
+    border-radius: 999px;
+    border: 1px dashed var(--border);
+    background: #fdfefe;
+    color: var(--text);
+    padding: 6px 14px;
+    font-size: 0.9rem;
+    cursor: pointer;
+    transition: background 0.2s ease, border-color 0.2s ease, color 0.2s ease, box-shadow 0.2s ease;
+}
+
+.force-search-button.active {
+    background: var(--accent);
+    border-color: var(--accent);
+    color: #ffffff;
+    box-shadow: 0 10px 18px rgba(37, 99, 235, 0.25);
+}
+
+.force-search-button:disabled {
+    opacity: 0.6;
+    cursor: not-allowed;
+    box-shadow: none;
+}
+
+.force-search-hint {
+    font-size: 0.82rem;
+    color: var(--muted);
 }
 
 .search-source-dropdown {
@@ -932,5 +1037,11 @@ body {
 
     .message .bubble {
         max-width: 100%;
+    }
+
+    /* 在移动设备上，搜索源和LLM调用垂直排列 */
+    .timing-sections-container {
+        flex-direction: column;
+        gap: 12px;
     }
 }

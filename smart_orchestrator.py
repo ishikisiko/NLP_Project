@@ -53,6 +53,7 @@ class SmartSearchOrchestrator:
         configured_search_sources: Optional[List[str]] = None,
         show_timings: bool = False,
         google_api_key: Optional[str] = None,
+        finnhub_api_key: Optional[str] = None,
         sportsdb_api_key: Optional[str] = None,
         apisports_api_key: Optional[str] = None,
     ) -> None:
@@ -74,6 +75,7 @@ class SmartSearchOrchestrator:
             llm_client=selector_client,
             use_llm=selector_client is not None,
             google_api_key=google_api_key,
+            finnhub_api_key=finnhub_api_key,
             sportsdb_api_key=sportsdb_api_key,
             apisports_api_key=apisports_api_key,
         )
@@ -99,6 +101,7 @@ class SmartSearchOrchestrator:
         temperature: float = 0.3,
         allow_search: bool = True,
         reference_limit: Optional[int] = None,
+        force_search: bool = False,
     ) -> Dict[str, Any]:
         try:
             total_limit = max(1, int(num_search_results))
@@ -112,6 +115,8 @@ class SmartSearchOrchestrator:
             )
         except (TypeError, ValueError):
             per_source_limit = total_limit
+
+        force_search = bool(force_search and allow_search)
 
         timing_recorder = TimingRecorder(enabled=self.show_timings)
         timing_recorder.start()
@@ -171,62 +176,75 @@ class SmartSearchOrchestrator:
                     domain_api_result=domain_api_result,
                     has_docs=has_docs,
                     allow_search=allow_search,
+                    force_search_enabled=force_search,
                 ),
                 timing_recorder,
             )
 
-        decision = self._decide(effective_query, timing_recorder=timing_recorder)
-        decision_meta = {
-            "needs_search": decision.get("needs_search", True),
-            "reason": decision.get("reason"),
-            "raw_text": decision.get("raw_text"),
-            "llm_warning": decision.get("llm_warning"),
-            "llm_error": decision.get("llm_error"),
-        }
-        decision_raw = decision.get("llm_raw")
+        decision_meta: Dict[str, Any]
+        decision_raw: Optional[Dict[str, Any]] = None
 
-        if not decision_meta["needs_search"] and decision.get("direct_answer"):
-            return self._finalize_with_timings(
-                self._direct_answer_from_decision(
-                    query=query,
-                    answer=decision["direct_answer"],
-                    decision_meta=decision_meta,
-                    decision_raw=decision_raw,
-                    has_docs=has_docs,
-                    allow_search=True,
-                ),
-                timing_recorder,
-            )
+        if not force_search:
+            decision = self._decide(effective_query, timing_recorder=timing_recorder)
+            decision_meta = {
+                "needs_search": decision.get("needs_search", True),
+                "reason": decision.get("reason"),
+                "raw_text": decision.get("raw_text"),
+                "llm_warning": decision.get("llm_warning"),
+                "llm_error": decision.get("llm_error"),
+            }
+            decision_raw = decision.get("llm_raw")
 
-        if not decision_meta["needs_search"]:
-            return self._finalize_with_timings(
-                self._direct_answer_via_llm(
-                    query=query,
-                    max_tokens=max_tokens,
-                    temperature=temperature,
-                    has_docs=has_docs,
-                    allow_search=True,
-                    reason="direct_llm_fallback",
-                    decision_meta=decision_meta,
-                    timing_recorder=timing_recorder,
-                ),
-                timing_recorder,
-            )
+            if not decision_meta["needs_search"] and decision.get("direct_answer"):
+                return self._finalize_with_timings(
+                    self._direct_answer_from_decision(
+                        query=query,
+                        answer=decision["direct_answer"],
+                        decision_meta=decision_meta,
+                        decision_raw=decision_raw,
+                        has_docs=has_docs,
+                        allow_search=True,
+                    ),
+                    timing_recorder,
+                )
+
+            if not decision_meta["needs_search"]:
+                return self._finalize_with_timings(
+                    self._direct_answer_via_llm(
+                        query=query,
+                        max_tokens=max_tokens,
+                        temperature=temperature,
+                        has_docs=has_docs,
+                        allow_search=True,
+                        reason="direct_llm_fallback",
+                        decision_meta=decision_meta,
+                        timing_recorder=timing_recorder,
+                    ),
+                    timing_recorder,
+                )
+        else:
+            decision_meta = {
+                "needs_search": True,
+                "reason": "force_search_override",
+                "raw_text": None,
+                "llm_warning": None,
+                "llm_error": None,
+            }
 
         if not self.search_client:
-            return self._finalize_with_timings(
-                self._search_unavailable_response(
-                    query=query,
-                    snapshot=snapshot,
-                    has_docs=has_docs,
-                    decision_meta=decision_meta,
-                    max_tokens=max_tokens,
-                    temperature=temperature,
-                    num_retrieved_docs=num_retrieved_docs,
-                    timing_recorder=timing_recorder,
-                ),
-                timing_recorder,
+            response = self._search_unavailable_response(
+                query=query,
+                snapshot=snapshot,
+                has_docs=has_docs,
+                decision_meta=decision_meta,
+                max_tokens=max_tokens,
+                temperature=temperature,
+                num_retrieved_docs=num_retrieved_docs,
+                timing_recorder=timing_recorder,
             )
+            if force_search:
+                self._merge_control(response, {"force_search_enabled": True})
+            return self._finalize_with_timings(response, timing_recorder)
 
         keyword_info = self._generate_keywords(effective_query, timing_recorder=timing_recorder)
         keywords = keyword_info.get("keywords") or [effective_query]
@@ -238,19 +256,19 @@ class SmartSearchOrchestrator:
             snapshot=snapshot,
         )
         if pipeline is None:
-            return self._finalize_with_timings(
-                self._search_unavailable_response(
-                    query=query,
-                    snapshot=snapshot,
-                    has_docs=has_docs,
-                    decision_meta=decision_meta,
-                    max_tokens=max_tokens,
-                    temperature=temperature,
-                    num_retrieved_docs=num_retrieved_docs,
-                    timing_recorder=timing_recorder,
-                ),
-                timing_recorder,
+            response = self._search_unavailable_response(
+                query=query,
+                snapshot=snapshot,
+                has_docs=has_docs,
+                decision_meta=decision_meta,
+                max_tokens=max_tokens,
+                temperature=temperature,
+                num_retrieved_docs=num_retrieved_docs,
+                timing_recorder=timing_recorder,
             )
+            if force_search:
+                self._merge_control(response, {"force_search_enabled": True})
+            return self._finalize_with_timings(response, timing_recorder)
 
         pipeline_kwargs: Dict[str, Any] = {
             "search_query": search_query,
@@ -294,6 +312,7 @@ class SmartSearchOrchestrator:
             "enhanced_query": enhanced_query,
             "search_total_limit": total_limit,
             "search_per_source_limit": per_source_limit,
+            "force_search_enabled": force_search,
         }
         if domain_api_result:
             control_payload["domain_api"] = self._summarize_domain_api(domain_api_result)
@@ -454,6 +473,7 @@ class SmartSearchOrchestrator:
         domain_api_result: Dict[str, Any],
         has_docs: bool,
         allow_search: bool,
+        force_search_enabled: bool,
         timing_recorder: Optional[TimingRecorder] = None,
     ) -> Dict[str, Any]:
         decision_meta = {
@@ -475,6 +495,7 @@ class SmartSearchOrchestrator:
             "selected_sources": sources,
             "enhanced_query": enhanced_query,
             "domain_api": self._summarize_domain_api(domain_api_result),
+            "force_search_enabled": force_search_enabled,
         }
         
         # LLM增强回复
@@ -1040,9 +1061,10 @@ class SmartSearchOrchestrator:
     @classmethod
     def _keyword_prompt(cls, query: str) -> str:
         return (
-            "请为以下问题生成不超过4个高质量的搜索关键词或短语，"
-            "以数组形式返回JSON，例如{\"keywords\": [\"关键词1\", \"关键词2\"]}。"
-            "关键词应覆盖查询核心信息。\n\n"
+            "请为以下问题生成不超过4个高质量的中英文双语搜索关键词或短语，"
+            "每个关键词概念提供中英文版本，以数组形式返回JSON，"
+            "例如{\"keywords\": [\"关键词1\", \"keyword 1\", \"关键词2\", \"keyword 2\"]}。"
+            "关键词应覆盖查询核心信息，使用英文提升搜索效果。\n\n"
             "用户问题:\n" + query
         )
 
