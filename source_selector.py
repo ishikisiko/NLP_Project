@@ -506,10 +506,19 @@ class IntelligentSourceSelector:
         timing_recorder: Optional[TimingRecorder] = None,
     ) -> Optional[Dict[str, Any]]:
         url = f"{self.google_routes_base_url}/directions/v2:computeRoutes"
+        # Map internal modes to Google Routes API v2 modes
+        mode_mapping = {
+            "DRIVING": "DRIVE",
+            "WALKING": "WALK",
+            "BICYCLING": "BICYCLE",
+            "TRANSIT": "TRANSIT"
+        }
+        api_mode = mode_mapping.get(mode.upper(), "DRIVE")
+
         payload = {
             "origin": {"address": origin},
             "destination": {"address": destination},
-            "travelMode": mode.upper(),
+            "travelMode": api_mode,
             "routingPreference": "TRAFFIC_AWARE_OPTIMAL",
             "computeAlternativeRoutes": False,
         }
