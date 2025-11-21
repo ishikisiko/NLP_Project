@@ -362,6 +362,10 @@ def answer() -> Any:
         return False
 
     force_search = _coerce_bool(payload.get("force_search")) and allow_search
+    
+    images = payload.get("images")
+    if images and not isinstance(images, list):
+        return jsonify({"error": "'images' must be a list."}), 400
 
     try:
         # Support both provider and model parameters for backward compatibility
@@ -418,6 +422,7 @@ def answer() -> Any:
             allow_search=allow_search,
             reference_limit=reference_limit,
             force_search=force_search,
+            images=images,
         )
         print(f"[server] Pipeline returned result with keys: {list(result.keys()) if isinstance(result, dict) else type(result)}")
     except Exception as exc:  # pragma: no cover - propagate runtime issues

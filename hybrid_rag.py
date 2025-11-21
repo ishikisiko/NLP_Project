@@ -120,6 +120,7 @@ class HybridRAG:
         freshness: Optional[str] = None,
         date_restrict: Optional[str] = None,
         timing_recorder: Optional[TimingRecorder] = None,
+        images: Optional[List[Dict[str, str]]] = None,
     ) -> Dict[str, object]:
         hits: List[SearchHit] = []
         effective_query = search_query.strip() if search_query else query
@@ -176,6 +177,7 @@ class HybridRAG:
                 user_prompt=user_prompt,
                 max_tokens=max_tokens,
                 temperature=temperature,
+                images=images,
             )
         finally:
             if timing_recorder:

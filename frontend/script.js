@@ -23,6 +23,7 @@ document.addEventListener("DOMContentLoaded", () => {
     const uploadButton = document.getElementById("upload-button");
     const fileInput = document.getElementById("file-input");
     const fileList = document.getElementById("file-list");
+    const imagePreviewList = document.getElementById("image-preview-list");
     const totalLimitInput = document.getElementById("search-total-limit");
     const perSourceLimitInput = document.getElementById("search-per-source-limit");
     const referenceLimitInput = document.getElementById("search-reference-limit");
@@ -67,6 +68,7 @@ document.addEventListener("DOMContentLoaded", () => {
         searchSources: new Set(),
         timingOptions: new Set(['total', 'search', 'llm']), // 默认全部显示
         forceSearch: false,
+        images: [],
     };
 
     let collapsibleSectionId = 0;
@@ -196,7 +198,7 @@ document.addEventListener("DOMContentLoaded", () => {
         if (!searchSourceCheckboxes.length) return;
         state.searchSources.clear();
         for (const checkbox of searchSourceCheckboxes) {
-            if (checkbox.checked) {
+            if (checkbox.checked && checkbox.value !== 'mcp') {
                 state.searchSources.add(checkbox.value);
             }
         }
@@ -1134,6 +1136,12 @@ document.addEventListener("DOMContentLoaded", () => {
         if (searchToggle.checked && state.forceSearch) {
             payload.force_search = true;
         }
+        if (state.images.length > 0) {
+            payload.images = state.images.map(img => ({
+                base64: img.base64,
+                mime_type: img.mime_type
+            }));
+        }
         if (searchToggle.checked) {
             normalizeSearchLimits();
             if (totalLimitInput) {
@@ -1216,6 +1224,8 @@ document.addEventListener("DOMContentLoaded", () => {
         } finally {
             setLoading(false);
             editor.focus();
+            state.images = [];
+            renderImages();
         }
     }
 
@@ -1267,29 +1277,65 @@ document.addEventListener("DOMContentLoaded", () => {
 
     async function uploadFiles(files) {
         if (!files || files.length === 0) return;
-        statusMessage.textContent = "正在上传文件…";
-
+        
+        const imageFiles = [];
+        const docFiles = [];
+        
         for (const file of files) {
-            const formData = new FormData();
-            formData.append("file", file);
-            try {
-                const response = await fetch("/api/files", {
-                    method: "POST",
-                    body: formData,
-                });
-                if (!response.ok) {
-                    const error = await response.json().catch(() => ({}));
-                    throw new Error(error?.error || "上传失败");
-                }
-            } catch (error) {
-                console.error(error);
-                statusMessage.textContent = `${file.name} 上传失败`;
-                return;
+            if (file.type.startsWith('image/')) {
+                imageFiles.push(file);
+            } else {
+                docFiles.push(file);
             }
         }
 
-        statusMessage.textContent = "文件上传完成";
-        await fetchFiles();
+        if (imageFiles.length > 0) {
+            for (const file of imageFiles) {
+                if (file.size > 5 * 1024 * 1024) {
+                    statusMessage.textContent = `${file.name} 太大 (最大 5MB)`;
+                    continue;
+                }
+                const reader = new FileReader();
+                reader.onload = (e) => {
+                    state.images.push({
+                        name: file.name,
+                        base64: e.target.result,
+                        mime_type: file.type
+                    });
+                    renderImages();
+                };
+                reader.readAsDataURL(file);
+            }
+            if (docFiles.length === 0) {
+                 statusMessage.textContent = `已添加 ${imageFiles.length} 张图片`;
+            }
+        }
+
+        if (docFiles.length > 0) {
+            statusMessage.textContent = "正在上传文件…";
+
+            for (const file of docFiles) {
+                const formData = new FormData();
+                formData.append("file", file);
+                try {
+                    const response = await fetch("/api/files", {
+                        method: "POST",
+                        body: formData,
+                    });
+                    if (!response.ok) {
+                        const error = await response.json().catch(() => ({}));
+                        throw new Error(error?.error || "上传失败");
+                    }
+                } catch (error) {
+                    console.error(error);
+                    statusMessage.textContent = `${file.name} 上传失败`;
+                    return;
+                }
+            }
+
+            statusMessage.textContent = "文件上传完成";
+            await fetchFiles();
+        }
     }
 
     function autoResize() {
@@ -1393,6 +1439,37 @@ document.addEventListener("DOMContentLoaded", () => {
 
     if (referenceLimitInput) {
         referenceLimitInput.addEventListener("change", normalizeSearchLimits);
+    }
+
+    function renderImages() {
+        if (!imagePreviewList) return;
+        imagePreviewList.innerHTML = "";
+        state.images.forEach((img, index) => {
+            const chip = document.createElement("div");
+            chip.className = "chip image-chip";
+            
+            const thumb = document.createElement("img");
+            thumb.src = img.base64;
+            thumb.style.height = "20px";
+            thumb.style.marginRight = "6px";
+            thumb.style.verticalAlign = "middle";
+            chip.appendChild(thumb);
+
+            const nameSpan = document.createElement("span");
+            nameSpan.textContent = img.name;
+            chip.appendChild(nameSpan);
+
+            const removeButton = document.createElement("button");
+            removeButton.type = "button";
+            removeButton.textContent = "×";
+            removeButton.addEventListener("click", () => {
+                state.images.splice(index, 1);
+                renderImages();
+            });
+            chip.appendChild(removeButton);
+            
+            imagePreviewList.appendChild(chip);
+        });
     }
 
     ensurePlaceholder();

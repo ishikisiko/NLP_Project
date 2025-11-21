@@ -79,6 +79,7 @@ class NoRAGBaseline:
         date_restrict: Optional[str] = None,
         timing_recorder: Optional[TimingRecorder] = None,
         reference_limit: Optional[int] = None,
+        images: Optional[List[Dict[str, str]]] = None,
     ) -> Dict[str, object]:
         # Prefer keyword-focused query generated upstream when available.
         effective_query = search_query.strip() if search_query else query
@@ -116,6 +117,7 @@ class NoRAGBaseline:
                 user_prompt=user_prompt,
                 max_tokens=max_tokens,
                 temperature=temperature,
+                images=images,
             )
         finally:
             if timing_recorder:

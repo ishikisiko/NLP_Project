@@ -99,6 +99,7 @@ class LLMClient:
         max_tokens: int = 5000,
         temperature: float = 0.7,
         extra_messages: Optional[List[Dict[str, str]]] = None,
+        images: Optional[List[Dict[str, str]]] = None,
     ) -> Dict[str, Any]:
         """Chat method for OpenAI-compatible APIs with enhanced error handling."""
         endpoint = f"{self.base_url}/chat/completions"
@@ -109,7 +110,24 @@ class LLMClient:
         messages = [{"role": "system", "content": system_prompt}]
         if extra_messages:
             messages.extend(extra_messages)
-        messages.append({"role": "user", "content": user_prompt})
+        
+        # Handle images for OpenRouter Grok (or other vision models if needed later)
+        if images and self.provider == "openrouter" and "grok" in self.model_id.lower():
+             content_list = [{"type": "text", "text": user_prompt}]
+             for img in images:
+                 b64 = img.get("base64", "")
+                 if "," in b64:
+                     b64 = b64.split(",")[1]
+                 mime = img.get("mime_type", "image/jpeg")
+                 content_list.append({
+                     "type": "image_url",
+                     "image_url": {
+                         "url": f"data:{mime};base64,{b64}"
+                     }
+                 })
+             messages.append({"role": "user", "content": content_list})
+        else:
+             messages.append({"role": "user", "content": user_prompt})
 
         payload = {
             "model": self.model_id,

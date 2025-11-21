@@ -102,6 +102,7 @@ class SmartSearchOrchestrator:
         allow_search: bool = True,
         reference_limit: Optional[int] = None,
         force_search: bool = False,
+        images: Optional[List[Dict[str, str]]] = None,
     ) -> Dict[str, Any]:
         try:
             total_limit = max(1, int(num_search_results))
@@ -153,6 +154,7 @@ class SmartSearchOrchestrator:
                     search_allowed=False,
                     decision_reason="search_disabled",
                     timing_recorder=timing_recorder,
+                    images=images,
                 ),
                 timing_recorder,
             )
@@ -219,6 +221,7 @@ class SmartSearchOrchestrator:
                         reason="direct_llm_fallback",
                         decision_meta=decision_meta,
                         timing_recorder=timing_recorder,
+                        images=images,
                     ),
                     timing_recorder,
                 )
@@ -276,6 +279,7 @@ class SmartSearchOrchestrator:
             "max_tokens": max_tokens,
             "temperature": temperature,
             "timing_recorder": timing_recorder,
+            "images": images,
         }
         if isinstance(pipeline, HybridRAG):
             pipeline_kwargs.update(
@@ -407,6 +411,7 @@ class SmartSearchOrchestrator:
         search_allowed: bool,
         decision_reason: str,
         timing_recorder: Optional[TimingRecorder],
+        images: Optional[List[Dict[str, str]]] = None,
     ) -> Dict[str, Any]:
         decision_meta = {
             "needs_search": False,
@@ -426,6 +431,7 @@ class SmartSearchOrchestrator:
                 reason=decision_reason,
                 decision_meta=decision_meta,
                 timing_recorder=timing_recorder,
+                images=images,
             )
 
         pipeline = self._ensure_local_pipeline(snapshot)
@@ -439,14 +445,27 @@ class SmartSearchOrchestrator:
                 reason=decision_reason,
                 decision_meta=decision_meta,
                 timing_recorder=timing_recorder,
+                images=images,
             )
 
+        # LocalRAG pipeline answer method needs to support images if we want to use it there
+        # For now, let's assume LocalRAG doesn't support images yet, or we update it.
+        # If images are present, maybe we should skip LocalRAG or update it?
+        # Let's update LocalRAG later. For now, pass it if possible, or just ignore for LocalRAG.
+        # But wait, if user uploads image, they expect it to be used.
+        # If I don't update LocalRAG, I should probably use direct answer if images are present?
+        # Or just update LocalRAG.
+        
+        # Let's update LocalRAG.answer signature later.
+        # For now, I will pass images to pipeline.answer via kwargs if I update it.
+        
         result = pipeline.answer(
             query,
             num_retrieved_docs=num_retrieved_docs,
             max_tokens=max_tokens,
             temperature=temperature,
             timing_recorder=timing_recorder,
+            # images=images, # TODO: Update LocalRAG
         )
         result.setdefault("search_hits", [])
         result["search_query"] = None
@@ -608,6 +627,7 @@ class SmartSearchOrchestrator:
         reason: str,
         decision_meta: Optional[Dict[str, Any]] = None,
         timing_recorder: Optional[TimingRecorder],
+        images: Optional[List[Dict[str, str]]] = None,
     ) -> Dict[str, Any]:
         fallback = self._chat_with_timing(
             self.llm_client,
@@ -618,6 +638,7 @@ class SmartSearchOrchestrator:
             max_tokens=max_tokens,
             temperature=temperature,
             extra={"stage": reason},
+            images=images,
         )
         meta = (
             dict(decision_meta)

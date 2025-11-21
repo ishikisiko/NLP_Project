@@ -67,7 +67,7 @@
                                         <span>You.com</span>
                                     </label>
                                     <label class="search-source-option" for="search-source-mcp">
-                                        <input type="checkbox" id="search-source-mcp" value="mcp" checked>
+                                        <input type="checkbox" id="search-source-mcp" value="mcp">
                                         <span>MCP</span>
                                     </label>
                                     <label class="search-source-option" for="search-source-google">
@@ -165,10 +165,11 @@
                     <div class="control-field upload-field">
                         <span>文件上传</span>
                         <button type="button" id="upload-button">选择文件</button>
-                        <input type="file" id="file-input" hidden multiple>
+                        <input type="file" id="file-input" hidden multiple accept=".txt,.md,.pdf,.jpg,.jpeg,.png,.gif,.webp">
                     </div>
                 </div>
 
+                <div class="file-chip-list" id="image-preview-list" aria-live="polite"></div>
                 <div class="file-chip-list" id="file-list" aria-live="polite"></div>
 
                 <div class="composer-footer">
