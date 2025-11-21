@@ -27,6 +27,7 @@ class IntelligentSourceSelector:
         request_timeout: int = 12,
         finnhub_api_key: Optional[str] = None,
         sportsdb_api_key: Optional[str] = None,
+        apisports_api_key: Optional[str] = None,  # 添加缺失参数
     ):
         # 领域关键词映射
         self.domain_keywords = {
@@ -133,6 +134,7 @@ class IntelligentSourceSelector:
         self.finnhub_api_key = (finnhub_api_key or os.getenv("FINNHUB_API_KEY") or "").strip()
         
         self.sportsdb_api_key = (sportsdb_api_key or os.getenv("SPORTSDB_API_KEY") or "123").strip()
+        self.apisports_api_key = (apisports_api_key or os.getenv("APISPORTS_KEY") or "").strip()
     
     def classify_domain(self, query: str, timing_recorder: Optional[TimingRecorder] = None) -> str:
         """分类查询的领域"""
@@ -440,8 +442,12 @@ class IntelligentSourceSelector:
     def _handle_sports(
         self,
         query: str,
-        timing_recorder: Optional[TimingRecorder],
+        timing_recorder: Optional[TimingRecorder] = None,
     ) -> Dict[str, Any]:
+        # 不启用 SportsDB API（保留代码但跳过调用）
+        if not self.sportsdb_api_key or self.sportsdb_api_key == "123":
+            return {"handled": False, "skipped": True, "reason": "sportsdb_disabled"}
+
         entity = self._extract_sports_entity(query)
         if not entity:
             return {"handled": True, "error": "cannot_parse_sports_entity"}
@@ -728,6 +734,113 @@ class IntelligentSourceSelector:
             f"比分：{str_status}\n"
             f"时间：{date_event} {str_time}"
         )
+
+    def _geocode_text(
+        self,
+        location: str,
+        timing_recorder: Optional[TimingRecorder] = None,
+    ) -> Optional[Dict[str, Any]]:
+        """使用 Google Geocoding API 将文本地点转换为坐标"""
+        if not self.google_api_key:
+            return {"error": "missing_google_api_key"}
+
+        params = {
+            "address": location,
+            "key": self.google_api_key,
+        }
+        start = time.perf_counter()
+        try:
+            response = requests.get(
+                self.google_geocode_url,
+                params=params,
+                timeout=self.request_timeout,
+            )
+            response.raise_for_status()
+            data = response.json()
+
+            results = data.get("results", [])
+            if not results:
+                return {"error": "no_geocode_results"}
+
+            result = results[0]
+            geometry = result.get("geometry", {}).get("location", {})
+            formatted = result.get("formatted_address", "")
+
+            return {
+                "lat": geometry.get("lat"),
+                "lng": geometry.get("lng"),
+                "formatted_address": formatted,
+            }
+        except Exception as exc:
+            return {"error": str(exc)}
+        finally:
+            if timing_recorder:
+                duration_ms = (time.perf_counter() - start) * 1000
+                timing_recorder.record_search_timing(
+                    source="google_geocode",
+                    label="Google Geocode",
+                    duration_ms=duration_ms,
+                )
+
+    def _call_google_weather(
+        self,
+        lat: float,
+        lng: float,
+        timing_recorder: Optional[TimingRecorder] = None,
+    ) -> Optional[Dict[str, Any]]:
+        """调用 Google Weather API 获取当前天气"""
+        params = {
+            "key": self.google_api_key,
+            "lat": lat,
+            "lon": lng,
+        }
+        start = time.perf_counter()
+        try:
+            response = requests.get(
+                f"{self.google_weather_base_url}/currentConditions:lookup",
+                params=params,
+                timeout=self.request_timeout,
+            )
+            response.raise_for_status()
+            return response.json()
+        except Exception as exc:
+            return {"error": str(exc)}
+        finally:
+            if timing_recorder:
+                duration_ms = (time.perf_counter() - start) * 1000
+                timing_recorder.record_search_timing(
+                    source="google_weather",
+                    label="Google Weather",
+                    duration_ms=duration_ms,
+                )
+
+    def _format_weather_answer(
+        self,
+        location_hint: str,
+        geocode: Dict[str, Any],
+        weather_data: Dict[str, Any],
+    ) -> str:
+        """格式化天气回复"""
+        try:
+            condition = (
+                weather_data.get("weatherCondition", {})
+                .get("description", {})
+                .get("text", "未知")
+            )
+            temp = weather_data.get("temperature", {}).get("degrees", "未知")
+            humidity = weather_data.get("relativeHumidity", {}).get("value", "未知")
+            wind = (
+                weather_data.get("wind", {})
+                .get("speed", {})
+                .get("value", "未知")
+            )
+            location = geocode.get("formatted_address", location_hint)
+            return (
+                f"{location} 当前天气：{condition}，"
+                f"{temp}°C，湿度{int(humidity)}%，风速{wind}km/h。"
+            )
+        except Exception:
+            return f"{location_hint} 天气数据获取成功，但解析失败。"
 
 def test_basic_functionality():
     """基础功能测试"""

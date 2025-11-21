@@ -54,6 +54,7 @@ class SmartSearchOrchestrator:
         show_timings: bool = False,
         google_api_key: Optional[str] = None,
         sportsdb_api_key: Optional[str] = None,
+        apisports_api_key: Optional[str] = None,
     ) -> None:
         self.llm_client = llm_client
         self.classifier_llm_client = classifier_llm_client
@@ -74,6 +75,7 @@ class SmartSearchOrchestrator:
             use_llm=selector_client is not None,
             google_api_key=google_api_key,
             sportsdb_api_key=sportsdb_api_key,
+            apisports_api_key=apisports_api_key,
         )
         self.requested_search_sources = self._normalize_sources(requested_search_sources)
         raw_active_sources = active_search_sources or getattr(search_client, "active_sources", [])

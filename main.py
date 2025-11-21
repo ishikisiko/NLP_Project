@@ -617,12 +617,24 @@ def main() -> None:
     google_key_cli = (google_cfg_cli.get("api_key") or config.get("GOOGLE_API_KEY") or "").strip()
     google_cx_cli = (google_cfg_cli.get("cx") or config.get("GOOGLE_CX") or "").strip()
     sportsdb_key_cli = (config.get("SPORTSDB_API_KEY") or "").strip()
+    apisports_key_cli = (config.get("APISPORTS_KEY") or "").strip()
     
     if google_key_cli and google_cx_cli:
         configured_sources.append("google")
     
+    # Build search client and extract metadata
+    search_client = build_search_client(config)
+    requested_sources = getattr(search_client, "requested_sources", []) if search_client else []
+    active_sources = getattr(search_client, "active_sources", []) if search_client else []
+    active_labels = getattr(search_client, "active_source_labels", []) if search_client else []
+    missing_sources = getattr(search_client, "missing_requested_sources", []) if search_client else []
+    configured_sources = getattr(search_client, "configured_sources", configured_sources) if search_client else configured_sources
+    
+    show_timings = args.pretty
+    
     orchestrator = SmartSearchOrchestrator(
         llm_client=llm_client,
+        apisports_api_key=apisports_key_cli,
         classifier_llm_client=classifier_client,
         routing_llm_client=routing_client,
         search_client=search_client,

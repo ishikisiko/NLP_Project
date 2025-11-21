@@ -13,7 +13,9 @@
     "YOU_API_KEY": "YOUR_YOU_API_KEY_HERE",
     "GOOGLE_API_KEY": "YOUR_GOOGLE_API_KEY_HERE",
     "GOOGLE_CX": "YOUR_GOOGLE_CUSTOM_SEARCH_ENGINE_ID_HERE",
-    "FINNHUB_API_KEY": "YOUR_FINNHUB_API_KEY_HERE",
+    "FINNHUB_API_KEY": "",
+    "APISPORTS_KEY": "",
+    "RAPIDAPI_KEY": "",
     "youSearch": {
         "country": "US",
         "safesearch": "moderate",
