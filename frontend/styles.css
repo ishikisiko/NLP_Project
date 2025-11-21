@@ -622,6 +622,31 @@ body {
     box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.18);
 }
 
+.CodeMirror {
+    width: 100%;
+    min-height: 96px;
+    height: auto;
+    padding: 12px 14px;
+    font-size: 1rem;
+    border-radius: 16px;
+    border: 1px solid var(--border);
+    background: #f8fafc;
+    color: var(--text);
+    transition: border-color 0.2s ease, box-shadow 0.2s ease;
+    font-family: "Inter", "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+}
+
+.CodeMirror-focused {
+    outline: none;
+    border-color: rgba(37, 99, 235, 0.35);
+    box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.18);
+}
+
+.CodeMirror-scroll {
+    min-height: 96px;
+    max-height: 320px;
+}
+
 .composer-controls {
     display: flex;
     flex-wrap: wrap;

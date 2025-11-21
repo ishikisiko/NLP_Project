@@ -344,6 +344,13 @@ def answer() -> Any:
         legacy_mode = (payload.get("mode") or "search").strip().lower()
         allow_search = legacy_mode != "local"
 
+    # Handle code blocks if present
+    code_blocks = payload.get("code_blocks")
+    if code_blocks and isinstance(code_blocks, list):
+        print(f"[server] Received {len(code_blocks)} code blocks")
+        # Optional: Append a hint to the query if code blocks are detected
+        # query += "\n\n[System Note: The user has provided code blocks. Please analyze them carefully.]"
+
     def _coerce_bool(raw_value: Any) -> bool:
         if isinstance(raw_value, bool):
             return raw_value

@@ -10,7 +10,7 @@ const formatter = {
 document.addEventListener("DOMContentLoaded", () => {
     const chatLog = document.getElementById("chat-log");
     const form = document.getElementById("query-form");
-    const textarea = document.getElementById("query");
+    // const textarea = document.getElementById("query"); // Replaced by CodeMirror
     const modelSelect = document.getElementById("model");
     const searchToggle = document.getElementById("search-toggle");
     const searchSourceDropdown = document.getElementById("search-source-dropdown");
@@ -37,6 +37,30 @@ document.addEventListener("DOMContentLoaded", () => {
     const timingCheckboxes = timingMenu
         ? Array.from(timingMenu.querySelectorAll('input[type="checkbox"]'))
         : [];
+
+    // Initialize CodeMirror
+    const editor = CodeMirror(document.getElementById("query-editor"), {
+        mode: "markdown",
+        lineNumbers: false,
+        lineWrapping: true,
+        viewportMargin: Infinity,
+        placeholder: "发送您的问题，例如：介绍一下检索增强生成的优势",
+        extraKeys: {
+            "Ctrl-Enter": function(cm) {
+                form.dispatchEvent(new Event("submit", { cancelable: true }));
+            },
+            "Cmd-Enter": function(cm) {
+                form.dispatchEvent(new Event("submit", { cancelable: true }));
+            }
+        }
+    });
+
+    // Sync CodeMirror changes to hidden textarea (optional, but good for form semantics)
+    editor.on("change", (cm) => {
+        const val = cm.getValue();
+        const textarea = document.getElementById("query");
+        if (textarea) textarea.value = val;
+    });
 
     const state = {
         loading: false,
@@ -510,44 +534,47 @@ document.addEventListener("DOMContentLoaded", () => {
 
     function renderMarkdown(md) {
         if (!md) return "";
-        let src = String(md);
+        // 1. Escape HTML first to prevent XSS and ensure correct rendering order
+        let src = escapeHTML(String(md));
 
-        // Handle fenced code blocks first: ```code```
-        src = src.replace(/```([\s\S]*?)```/g, (m, code) => {
-            const safe = escapeHTML(code);
-            return `<pre class="code"><code>${safe}</code></pre>`;
+        // 2. Handle fenced code blocks: ```lang\ncode```
+        // Regex captures optional language identifier and the code content
+        src = src.replace(/```(\w*)\n?([\s\S]*?)```/g, (m, lang, code) => {
+            const language = lang ? lang.toLowerCase() : 'none';
+            // code is already escaped
+            return `<pre><code class="language-${language}">${code}</code></pre>`;
         });
 
-        // Escape remaining HTML to avoid XSS
-        src = escapeHTML(src);
-
-        // Inline code
+        // 3. Inline code
         src = src.replace(/`([^`]+)`/g, (m, code) => `<code>${code}</code>`);
-        // Bold and italic (basic)
+
+        // 4. Bold and italic
         src = src.replace(/\*\*([^*]+)\*\*/g, (m, t) => `<strong>${t}</strong>`);
         src = src.replace(/(^|\s)\*([^*]+)\*(?=\s|$)/g, (m, pre, t) => `${pre}<em>${t}</em>`);
-        // Links [text](http|https url)
+
+        // 5. Links [text](url)
         src = src.replace(/\[([^\]]+)\]\(((?:https?:\/\/)[^\s)]+)\)/g, (m, text, url) =>
             `<a href="${url}" target="_blank" rel="noopener noreferrer">${text}</a>`
         );
 
-        // Headings (#, ##, ###) – keep small visuals using h3
+        // 6. Headings (#, ##, ###)
         src = src.replace(/^###\s+(.+)$/gm, (m, t) => `<h3>${t}</h3>`);
         src = src.replace(/^##\s+(.+)$/gm, (m, t) => `<h3>${t}</h3>`);
         src = src.replace(/^#\s+(.+)$/gm, (m, t) => `<h3>${t}</h3>`);
 
-        // Unordered list: lines starting with - or *
+        // 7. Unordered list
         src = src.replace(/^(?:\s*[-*]\s.+(?:\n|$))+?/gm, (block) => {
+            // Remove the leading marker and wrap in li
+            // Note: block is already escaped, so markers are - or *
             const items = block.trim().split(/\n/).map(l => l.replace(/^\s*[-*]\s+/, "").trim());
             const lis = items.map(it => `<li>${it}</li>`).join("");
             return `<ul>${lis}</ul>`;
         });
 
-        // Paragraphs: split by two or more newlines
+        // 8. Paragraphs
+        // Split by double newlines, but ignore if it's already an HTML block we created
         const parts = src.split(/\n{2,}/).map(p => {
-            // If already a block element, return as is
             if (/^\s*<(?:h3|ul|pre)/.test(p)) return p;
-            // Single newlines -> <br>
             const withBr = p.replace(/\n/g, "<br>");
             return `<p>${withBr}</p>`;
         });
@@ -975,6 +1002,11 @@ document.addEventListener("DOMContentLoaded", () => {
             bubble.appendChild(extras);
         }
 
+        // Trigger Prism highlight
+        if (window.Prism) {
+            Prism.highlightAllUnder(bubble);
+        }
+
         // Remove any old extras that might be outside the bubble
         const oldExtras = messageEl.querySelectorAll(".message-extras");
         oldExtras.forEach(node => {
@@ -1012,6 +1044,9 @@ document.addEventListener("DOMContentLoaded", () => {
         if (isLoading) {
             closeSearchSourceMenu();
         }
+        if (editor) {
+            editor.setOption("readOnly", isLoading ? "nocursor" : false);
+        }
     }
 
     function updateStatusFromResponse(data) {
@@ -1041,11 +1076,24 @@ document.addEventListener("DOMContentLoaded", () => {
         statusMessage.textContent = parts.length > 0 ? parts.join(" ｜ ") : "回答已生成";
     }
 
+    function extractCodeBlocks(text) {
+        const blocks = [];
+        const regex = /```(\w*)\n([\s\S]*?)```/g;
+        let match;
+        while ((match = regex.exec(text)) !== null) {
+            blocks.push({
+                lang: match[1] || "text",
+                content: match[2]
+            });
+        }
+        return blocks;
+    }
+
     async function handleSubmit(event) {
         event.preventDefault();
         if (state.loading) return;
 
-        const query = textarea.value.trim();
+        const query = editor.getValue().trim();
         if (!query) {
             statusMessage.textContent = "请输入问题。";
             return;
@@ -1064,13 +1112,19 @@ document.addEventListener("DOMContentLoaded", () => {
         } else {
             statusMessage.textContent = "正在等待LLM回应…";
         }
-        textarea.value = "";
-        autoResize();
+        editor.setValue("");
+        // autoResize(); // CodeMirror handles this
 
         const payload = {
             query,
             search: searchToggle.checked ? "on" : "off",
         };
+
+        const codeBlocks = extractCodeBlocks(query);
+        if (codeBlocks.length > 0) {
+            payload.code_blocks = codeBlocks;
+        }
+
         if (modelSelect.value) {
             payload.model = modelSelect.value;
         }
@@ -1161,7 +1215,7 @@ document.addEventListener("DOMContentLoaded", () => {
             setAssistantError(assistantMessage, "抱歉，暂时无法完成请求。");
         } finally {
             setLoading(false);
-            textarea.focus();
+            editor.focus();
         }
     }
 
@@ -1244,13 +1298,13 @@ document.addEventListener("DOMContentLoaded", () => {
     }
 
     form.addEventListener("submit", handleSubmit);
-    textarea.addEventListener("input", autoResize);
-    textarea.addEventListener("keydown", (event) => {
-        if (event.key === "Enter" && (event.ctrlKey || event.metaKey)) {
-            event.preventDefault();
-            form.dispatchEvent(new Event("submit", { cancelable: true }));
-        }
-    });
+    // textarea.addEventListener("input", autoResize);
+    // textarea.addEventListener("keydown", (event) => {
+    //     if (event.key === "Enter" && (event.ctrlKey || event.metaKey)) {
+    //         event.preventDefault();
+    //         form.dispatchEvent(new Event("submit", { cancelable: true }));
+    //     }
+    // });
 
     uploadButton.addEventListener("click", () => fileInput.click());
     fileInput.addEventListener("change", () => {
@@ -1344,7 +1398,7 @@ document.addEventListener("DOMContentLoaded", () => {
     ensurePlaceholder();
     fetchFiles();
     loadAvailableModels();
-    autoResize();
+    // autoResize();
     initializeSearchSources();
     initializeTimingOptions();
     updateSearchSourceVisibility();
