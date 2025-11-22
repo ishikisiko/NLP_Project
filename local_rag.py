@@ -148,7 +148,7 @@ class LocalRAG:
         response_start = time.perf_counter()
         try:
             response = self.llm_client.chat(
-                system_prompt="You are a helpful assistant.",
+                system_prompt="You are a helpful assistant. Always answer in the same language as the user's question.",
                 user_prompt=user_prompt,
                 max_tokens=max_tokens,
                 temperature=temperature,

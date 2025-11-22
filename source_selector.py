@@ -415,31 +415,216 @@ class IntelligentSourceSelector:
         query: str,
         timing_recorder: Optional[TimingRecorder],
     ) -> Dict[str, Any]:
-        symbol = self._extract_finance_symbol(query)
-        if not symbol:
+        symbols = self._extract_finance_symbols(query)
+        if not symbols:
             # 无法提取代码时跳过而不报错，交由通用搜索处理
             return {"handled": False, "reason": "cannot_parse_symbol", "skipped": True}
 
-        if not self.finnhub_api_key:
-            return {"handled": True, "error": "missing_finnhub_api_key"}
+        # Check for historical/reasoning intent
+        query_lower = query.lower()
+        history_keywords = ["过去", "past", "days", "history", "trend", "历史", "走势", "表现"]
+        reasoning_keywords = ["为什么", "why", "reason", "cause", "news", "analysis", "分析", "原因", "影响"]
+        
+        is_history = any(kw in query_lower for kw in history_keywords)
+        is_reasoning = any(kw in query_lower for kw in reasoning_keywords)
+        
+        # Regex to extract days count if present (e.g. "5 days")
+        period = "1d"
+        if is_history:
+            match_days = re.search(r'(\d+)\s*(?:天|days)', query_lower)
+            if match_days:
+                days = int(match_days.group(1))
+                # Map to yfinance valid periods roughly
+                if days <= 5: period = "5d"
+                elif days <= 30: period = "1mo"
+                elif days <= 90: period = "3mo"
+                elif days <= 180: period = "6mo"
+                elif days <= 365: period = "1y"
+                else: period = "max"
+            else:
+                period = "1mo" # Default history if not specified
 
-        quote = self._query_stock_price(symbol, timing_recorder=timing_recorder)
-        if not quote or quote.get("error"):
-            return {
+        results = []
+        for symbol in symbols:
+            if is_history:
+                quote = self._query_stock_history(symbol, period, timing_recorder=timing_recorder)
+            else:
+                quote = self._query_stock_price(symbol, timing_recorder=timing_recorder)
+            
+            if quote:
+                quote["symbol"] = symbol
+                results.append(quote)
+
+        if not results:
+             return {
                 "handled": True,
-                "error": quote.get("error") if quote else "finnhub_request_failed",
-                "symbol": symbol,
+                "error": "data_fetch_failed_for_all_symbols",
+                "symbols": symbols,
             }
 
-        answer = self._format_finance_answer(symbol, quote)
+        answer = self._format_finance_answer_multi(results, is_history)
+        
         return {
             "handled": True,
-            "provider": "finnhub",
-            "endpoint": "https://finnhub.io/api/v1/quote",
-            "symbol": symbol,
-            "data": quote,
+            "provider": "yfinance" if is_history else "finnhub/yfinance",
+            "endpoint": "yfinance.history" if is_history else "quote",
+            "symbols": symbols,
+            "data": results,
             "answer": answer,
+            # If the user asks for reasons/analysis, we must continue to the main search pipeline
+            # to retrieve news/web content, while providing the data we found as context.
+            "continue_search": is_reasoning
         }
+
+    def _extract_finance_symbols(self, query: str) -> List[str]:
+        """Extract multiple finance symbols from query."""
+        symbols = set()
+        query_upper = query.upper()
+        
+        # 1. Check specific maps first
+        index_map = {
+            "HANG SENG": "^HSI", "恒生": "^HSI",
+            "NASDAQ": "^IXIC", "纳斯达克": "^IXIC",
+            "DOW JONES": "^DJI", "道琼斯": "^DJI",
+            "S&P 500": "^GSPC", "标普500": "^GSPC",
+        }
+        for name, sym in index_map.items():
+            if name in query_upper:
+                symbols.add(sym)
+
+        # 2. Common Crypto
+        crypto_map = {
+            "比特币": "BTC-USD", "BTC": "BTC-USD",
+            "以太坊": "ETH-USD", "ETH": "ETH-USD",
+        }
+        for name, sym in crypto_map.items():
+            if name in query_upper:
+                symbols.add(sym)
+
+        # 3. Regex for Stock Symbols
+        
+        # Matches: (NVDA), (AMD)
+        matches_paren = re.findall(r'\(([A-Z]{1,5})\)', query_upper)
+        symbols.update(matches_paren)
+        
+        # Matches: 6 digits (CN/HK codes)
+        matches_digits = re.findall(r'(?<!\d)\d{6}(?!\d)', query)
+        symbols.update(matches_digits)
+
+        # Matches: NVDA, AMD (2-5 letters)
+        # Improved regex to handle mixed language boundaries and case insensitivity
+        # Look for 2-5 letter words not surrounded by other letters
+        candidates = re.findall(r'(?<![a-zA-Z])[a-zA-Z]{2,5}(?![a-zA-Z])', query)
+        
+        stopwords = {
+            "AND", "THE", "FOR", "WHO", "WHY", "USD", "HKD", "RMB", 
+            "STOCK", "PRICE", "DAYS", "PAST", "COMPARE", "WITH", "FROM", "TO",
+            "WHAT", "WHEN", "WHERE", "HOW", "IS", "ARE", "WAS", "WERE",
+            "YEAR", "MONTH", "WEEK", "DAY", "TODAY", "NOW", "NEWS",
+            "ANALYSIS", "TREND", "HISTORY", "PERFORMANCE", "VS", "OR",
+            "TOP", "BEST", "NEW", "OLD", "BIG", "SMALL", "BUY", "SELL"
+        }
+        
+        for m in candidates:
+            if m.upper() not in stopwords:
+                symbols.add(m.upper())
+
+        return list(symbols)
+
+    def _query_stock_history(self, symbol: str, period: str, timing_recorder: Optional[TimingRecorder] = None) -> Dict[str, Any]:
+        """Fetch historical data using yfinance."""
+        start = time.perf_counter()
+        try:
+            # Ensure yfinance is available
+            import yfinance as yf
+            ticker = yf.Ticker(symbol)
+            # Fetch history
+            df = ticker.history(period=period)
+            if df.empty:
+                return {"error": "no_history_data"}
+            
+            # Calculate basic stats
+            # Start/End close
+            if len(df) >= 2:
+                start_price = df.iloc[0]['Close']
+                end_price = df.iloc[-1]['Close']
+                change = end_price - start_price
+                pct_change = (change / start_price) * 100
+                
+                # Serialize a summary
+                history_summary = {
+                    "start_date": str(df.index[0].date()),
+                    "end_date": str(df.index[-1].date()),
+                    "start_price": start_price,
+                    "end_price": end_price,
+                    "change": change,
+                    "pct_change": pct_change,
+                    "high": df['High'].max(),
+                    "low": df['Low'].min(),
+                    "daily_data": [
+                        {"date": str(idx.date()), "close": row['Close'], "volume": row['Volume']}
+                        for idx, row in df.iterrows()
+                    ]
+                }
+                return history_summary
+            else:
+                return {"error": "insufficient_history_data"}
+
+        except Exception as exc:
+            return {"error": str(exc)}
+        finally:
+            if timing_recorder:
+                duration_ms = (time.perf_counter() - start) * 1000
+                timing_recorder.record_search_timing(
+                    source="yfinance_history",
+                    label="yfinance History",
+                    duration_ms=duration_ms,
+                )
+
+    def _format_finance_answer_multi(self, results: List[Dict[str, Any]], is_history: bool) -> str:
+        parts = []
+        for res in results:
+            sym = res.get("symbol", "Unknown")
+            if res.get("error"):
+                parts.append(f"{sym}: 数据获取失败 ({res['error']})")
+                continue
+            
+            if is_history:
+                # Format historical summary
+                pct = res.get("pct_change", 0)
+                sign = "+" if pct >= 0 else ""
+                
+                s_p = res.get('start_price')
+                e_p = res.get('end_price')
+                l_p = res.get('low')
+                h_p = res.get('high')
+                
+                s_str = f"{s_p:.2f}" if isinstance(s_p, (int, float)) else "N/A"
+                e_str = f"{e_p:.2f}" if isinstance(e_p, (int, float)) else "N/A"
+                l_str = f"{l_p:.2f}" if isinstance(l_p, (int, float)) else "N/A"
+                h_str = f"{h_p:.2f}" if isinstance(h_p, (int, float)) else "N/A"
+
+                daily_str = ""
+                if "daily_data" in res:
+                    daily_lines = ["   - 每日收盘:"]
+                    for d in res["daily_data"]:
+                        daily_lines.append(f"     {d['date']}: {d['close']:.2f}")
+                    daily_str = "\n" + "\n".join(daily_lines)
+
+                parts.append(
+                    f"📊 **{sym}** ({res.get('start_date', '?')} 至 {res.get('end_date', '?')}):\n"
+                    f"   - 涨跌幅: {sign}{pct:.2f}%\n"
+                    f"   - 收盘价: {s_str} -> {e_str}\n"
+                    f"   - 期间波动: {l_str} - {h_str}"
+                    f"{daily_str}"
+                )
+            else:
+                # Format current quote (reuse logic or simple)
+                c = res.get("c") or res.get("currentPrice")
+                parts.append(f"📈 **{sym}** 现价: {c}")
+
+        return "\n\n".join(parts)
+
 
     def _handle_sports(
         self,

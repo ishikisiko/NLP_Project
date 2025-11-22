@@ -693,6 +693,11 @@ document.addEventListener("DOMContentLoaded", () => {
         if (typeof control.search_reference_limit === "number") {
             controlFlags.appendChild(createBadge(`参考链接：${control.search_reference_limit}`));
         }
+        
+        // Add Domain Intelligence Badge
+        if (safeTimings && typeof safeTimings['领域智能类型'] === 'string') {
+            controlFlags.appendChild(createBadge(`领域智能类型：${safeTimings['领域智能类型']}`));
+        }
 
         const hasBadges = controlFlags.children.length > 0;
 

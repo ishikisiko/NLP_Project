@@ -29,7 +29,8 @@ class SmartSearchOrchestrator:
         "You help generate high quality web search keywords. Respond strictly in JSON."
     )
     DIRECT_ANSWER_SYSTEM_PROMPT = (
-        "You are a knowledgeable assistant. Answer clearly based on your existing knowledge."
+        "You are a knowledgeable assistant. Answer clearly based on your existing knowledge. "
+        "Always answer in the same language as the user's question."
     )
     SEARCH_SOURCE_LABELS = {
         "serp": "SerpAPI",
@@ -146,7 +147,7 @@ class SmartSearchOrchestrator:
                             "我通过搜索引擎找到了关于这张图片的以下线索（元数据）：\n\n"
                             f"最佳猜测标签：[{', '.join(labels)}]\n\n"
                             f"关联实体：[{', '.join(entities)}]\n\n"
-                            "请结合图片内容和上述线索，准确告诉用户这是哪个学校的什么建筑。如果线索不足，请诚实告知。"
+                            "请结合图片内容和上述线索回答用户的问题。如果线索不足，请诚实告知。请始终使用与用户提问相同的语言回答。"
                         )
                 except Exception as e:
                     print(f"Visual retrieval failed: {e}")
@@ -155,7 +156,7 @@ class SmartSearchOrchestrator:
             if visual_context:
                 system_prompt += "\n\n" + visual_context
             else:
-                system_prompt += "\n请结合图片内容回答用户的问题。注意：未能获取图片的外部元数据（如Google Vision结果），请完全依赖你的视觉能力进行识别。"
+                system_prompt += "\n请结合图片内容回答用户的问题。注意：未能获取图片的外部元数据（如Google Vision结果），请完全依赖你的视觉能力进行识别。请始终使用与用户提问相同的语言回答。"
 
             return self._finalize_with_timings(
                 self._direct_answer_via_llm(
@@ -218,7 +219,12 @@ class SmartSearchOrchestrator:
             domain,
             timing_recorder=timing_recorder,
         )
-        if domain_api_result and domain_api_result.get("handled") and domain_api_result.get("answer"):
+        
+        should_continue = False
+        if domain_api_result:
+            should_continue = domain_api_result.get("continue_search", False)
+
+        if domain_api_result and domain_api_result.get("handled") and domain_api_result.get("answer") and not should_continue:
             return self._finalize_with_timings(
                 self._domain_api_answer(
                     query=query,
@@ -232,6 +238,11 @@ class SmartSearchOrchestrator:
                 ),
                 timing_recorder,
             )
+        
+        # If we continue search, inject the domain data into the query context
+        if should_continue and domain_api_result.get("answer"):
+             print(f"Injecting domain data into context: {domain_api_result['answer'][:50]}...")
+             effective_query += f"\n\n[已知背景信息/Context Data]:\n{domain_api_result['answer']}\n(请结合上述数据和接下来的搜索结果回答)"
 
         decision_meta: Dict[str, Any]
         decision_raw: Optional[Dict[str, Any]] = None
@@ -605,7 +616,7 @@ class SmartSearchOrchestrator:
         if domain == "weather":
             system_prompt = (
                 "你是天气助手。根据实时数据，给出自然、丰富的回复，包括当前状况、穿衣/出行建议。"
-                "保持简洁、专业、中文。"
+                "保持简洁、专业，并使用与用户提问相同的语言。"
             )
             data_summary = (
                 f"位置：{domain_data.get('location', {}).get('formatted_address', '未知')}\n"
@@ -618,10 +629,18 @@ class SmartSearchOrchestrator:
         elif domain == "transportation":
             system_prompt = (
                 "你是交通助手。根据路线数据，给出详细建议，包括时间、拥堵、备选。"
-                "保持简洁、专业、中文。"
+                "保持简洁、专业，并使用与用户提问相同的语言。"
             )
             data_summary = json.dumps(domain_data, ensure_ascii=False, indent=2)
             user_prompt = f"查询：{query}\n路线数据：{data_summary}\n生成回复："
+        elif domain == "finance":
+            system_prompt = (
+                "你是金融助手。根据提供的股票数据，分析价格走势和表现。"
+                "如果包含多只股票，请进行对比。保持客观、专业，并使用与用户提问相同的语言。"
+            )
+            # domain_data is a list of dicts for finance
+            data_summary = json.dumps(domain_data, ensure_ascii=False, indent=2)
+            user_prompt = f"查询：{query}\n金融数据：{data_summary}\n生成回复："
         else:
             return {"content": "", "raw": None}
         
@@ -1197,6 +1216,17 @@ class SmartSearchOrchestrator:
             timing_recorder.stop()
             payload = timing_recorder.to_dict()
             if payload:
+                # Determine domain label
+                domain_label = "无"
+                control = finalized.get("control")
+                if isinstance(control, dict):
+                    domain = control.get("domain")
+                    if domain and str(domain).lower() != "general":
+                        domain_label = str(domain)
+                
+                # Add explicit field
+                payload["领域智能类型"] = domain_label
+                
                 finalized["response_times"] = payload
         return finalized
 
