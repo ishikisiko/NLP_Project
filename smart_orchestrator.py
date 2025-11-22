@@ -142,6 +142,28 @@ class SmartSearchOrchestrator:
                 timing_recorder,
             )
 
+        if images:
+            return self._finalize_with_timings(
+                self._direct_answer_via_llm(
+                    query=query,
+                    max_tokens=max_tokens,
+                    temperature=temperature,
+                    has_docs=has_docs,
+                    allow_search=allow_search,
+                    reason="image_content_present",
+                    decision_meta={
+                        "needs_search": False,
+                        "reason": "image_content_present",
+                        "raw_text": None,
+                        "llm_warning": None,
+                        "llm_error": None,
+                    },
+                    timing_recorder=timing_recorder,
+                    images=images,
+                ),
+                timing_recorder,
+            )
+
         if not allow_search:
             return self._finalize_with_timings(
                 self._answer_local_mode(

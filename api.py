@@ -111,18 +111,20 @@ class LLMClient:
         if extra_messages:
             messages.extend(extra_messages)
         
-        # Handle images for OpenRouter Grok (or other vision models if needed later)
-        if images and self.provider == "openrouter" and "grok" in self.model_id.lower():
+        # Handle images ONLY for Grok models as requested
+        if images and "grok" in self.model_id.lower():
              content_list = [{"type": "text", "text": user_prompt}]
              for img in images:
                  b64 = img.get("base64", "")
                  if "," in b64:
                      b64 = b64.split(",")[1]
                  mime = img.get("mime_type", "image/jpeg")
+                 detail = img.get("detail", "auto")  # Support detail level: low, high, auto
                  content_list.append({
                      "type": "image_url",
                      "image_url": {
-                         "url": f"data:{mime};base64,{b64}"
+                         "url": f"data:{mime};base64,{b64}",
+                         "detail": detail
                      }
                  })
              messages.append({"role": "user", "content": content_list})
