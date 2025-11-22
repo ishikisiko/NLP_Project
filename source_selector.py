@@ -955,6 +955,126 @@ class IntelligentSourceSelector:
             source = "yfinance"
 
         return f"{symbol}：" + "，".join(parts) + f"（数据源: {source}）"
+    
+
+    # 1. Google Routes 路线计算方法 (修复当前的 AttributeError)
+    def _call_google_routes(
+        self,
+        origin: str,
+        destination: str,
+        mode: str = "DRIVE",
+        timing_recorder: Optional[TimingRecorder] = None,
+    ) -> Optional[Dict[str, Any]]:
+        """调用 Google Routes API (v2) 计算路线"""
+        url = f"{self.google_routes_base_url}/directions/v2:computeRoutes"
+        
+        payload = {
+            "origin": {"address": origin},
+            "destination": {"address": destination},
+            "travelMode": mode,
+            "routingPreference": "TRAFFIC_AWARE" if mode == "DRIVE" else None,
+            "languageCode": "zh-CN",
+            "units": "METRIC"
+        }
+        
+        # 必须添加 FieldMask 才能获取数据
+        headers = {
+            "Content-Type": "application/json",
+            "X-Goog-Api-Key": self.google_api_key,
+            "X-Goog-FieldMask": "routes.duration,routes.distanceMeters,routes.description,routes.legs"
+        }
+
+        start = time.perf_counter()
+        try:
+            response = requests.post(url, json=payload, headers=headers, timeout=self.request_timeout)
+            response.raise_for_status()
+            return response.json()
+        except Exception as exc:
+            print(f"[Routes] API Request Failed: {exc}")
+            return {"error": str(exc)}
+        finally:
+            if timing_recorder:
+                timing_recorder.record_search_timing(
+                    source="google_routes",
+                    label="Google Routes",
+                    duration_ms=(time.perf_counter() - start) * 1000
+                )
+
+    # 2. 路线结果格式化方法
+    def _format_route_answer(
+        self,
+        mode_info: Dict[str, str],
+        origin_geo: Dict[str, Any],
+        dest_geo: Dict[str, Any],
+        route_payload: Dict[str, Any]
+    ) -> str:
+        """将路线数据格式化为可读文本"""
+        if not route_payload or "routes" not in route_payload or not route_payload["routes"]:
+            return f"{mode_info.get('display')}：未找到有效路线或 API 报错。"
+            
+        route = route_payload["routes"][0]
+        
+        # 解析距离 (米 -> 公里)
+        dist_meters = route.get("distanceMeters", 0)
+        dist_km = dist_meters / 1000
+        
+        # 解析时间 (格式如 "1800s")
+        dur_str = route.get("duration", "0s")
+        seconds = 0
+        if isinstance(dur_str, str) and dur_str.endswith("s"):
+            try:
+                seconds = int(dur_str[:-1])
+            except ValueError:
+                pass
+        
+        hours = seconds // 3600
+        minutes = (seconds % 3600) // 60
+        time_str = ""
+        if hours > 0: time_str += f"{hours}小时"
+        if minutes > 0 or hours == 0: time_str += f"{minutes}分钟"
+        
+        mode_label = mode_info.get("display", "行程")
+        return f"🚗 **{mode_label}**：预计耗时 **{time_str}**，距离 **{dist_km:.1f}公里**"
+
+    # 3. 股票查询分发方法 (预防金融查询报错)
+    def _query_stock_price(
+        self,
+        symbol: str,
+        timing_recorder: Optional[TimingRecorder] = None,
+    ) -> Optional[Dict[str, Any]]:
+        """尝试多种渠道查询股价"""
+        # 优先尝试 Finnhub (API)
+        if self.finnhub_api_key:
+            res = self._call_finnhub_quote(symbol, timing_recorder)
+            if res and not res.get("error") and res.get("c"):
+                res["source_name"] = "Finnhub"
+                return res
+        
+        # 其次尝试 yfinance (库)
+        try:
+            res = self._call_yfinance_quote(symbol, timing_recorder)
+            if res and not res.get("error"):
+                res["source_name"] = "Yahoo Finance (yfinance)"
+                return res
+        except Exception:
+            pass
+
+        return {"error": "所有金融数据源均不可用"}
+
+    # 4. 金融结果格式化方法
+    def _format_finance_answer(self, symbol: str, quote: Dict[str, Any]) -> str:
+        """格式化股价信息"""
+        price = quote.get("c", "N/A")
+        high = quote.get("h", "N/A")
+        low = quote.get("l", "N/A")
+        src = quote.get("source_name", "Unknown")
+        
+        return (
+            f"📈 **{symbol}** 实时行情 (来源: {src}):\n"
+            f"💰 当前价格: **{price}**\n"
+            f"⬆️ 今日最高: {high}\n"
+            f"⬇️ 今日最低: {low}"
+        )
 
 def test_basic_functionality():
     """基础功能测试"""
