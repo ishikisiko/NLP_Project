@@ -422,27 +422,48 @@ class IntelligentSourceSelector:
 
         # Check for historical/reasoning intent
         query_lower = query.lower()
-        history_keywords = ["过去", "past", "days", "history", "trend", "历史", "走势", "表现"]
+        history_keywords = [
+            "过去",
+            "過去",
+            "past",
+            "days",
+            "history",
+            "trend",
+            "历史",
+            "歷史",
+            "走势",
+            "走勢",
+            "表现",
+            "表現",
+            "近",
+            "最近",
+        ]
         reasoning_keywords = ["为什么", "why", "reason", "cause", "news", "analysis", "分析", "原因", "影响"]
         
         is_history = any(kw in query_lower for kw in history_keywords)
         is_reasoning = any(kw in query_lower for kw in reasoning_keywords)
-        
+
         # Regex to extract days count if present (e.g. "5 days")
         period = "1d"
-        if is_history:
-            match_days = re.search(r'(\d+)\s*(?:天|days)', query_lower)
-            if match_days:
-                days = int(match_days.group(1))
-                # Map to yfinance valid periods roughly
-                if days <= 5: period = "5d"
-                elif days <= 30: period = "1mo"
-                elif days <= 90: period = "3mo"
-                elif days <= 180: period = "6mo"
-                elif days <= 365: period = "1y"
-                else: period = "max"
+        match_days = re.search(r'(\d+)\s*(?:天|days)', query_lower)
+        if match_days:
+            is_history = True
+            days = int(match_days.group(1))
+            # Map to yfinance valid periods roughly
+            if days <= 5:
+                period = "5d"
+            elif days <= 30:
+                period = "1mo"
+            elif days <= 90:
+                period = "3mo"
+            elif days <= 180:
+                period = "6mo"
+            elif days <= 365:
+                period = "1y"
             else:
-                period = "1mo" # Default history if not specified
+                period = "max"
+        elif is_history:
+            period = "1mo"  # Default history if not specified
 
         results = []
         for symbol in symbols:
