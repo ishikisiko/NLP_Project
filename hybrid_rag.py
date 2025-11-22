@@ -132,9 +132,20 @@ class HybridRAG:
         if enable_search:
             try:
                 per_source_cap = per_source_limit if per_source_limit is not None else num_search_results
+                
+                # Calculate fetch limit to ensure we get enough candidates for reranking
+                # If reranker is enabled, we want to fetch (per_source_cap * num_sources) results
+                # CombinedSearchClient will aggregate them.
+                fetch_limit = num_search_results
+                if self.reranker:
+                    num_sources = 1
+                    if hasattr(self.search_client, "clients"):
+                        num_sources = len(self.search_client.clients)
+                    fetch_limit = per_source_cap * num_sources
+
                 raw_hits = self.search_client.search(
                     effective_query,
-                    num_results=num_search_results,
+                    num_results=fetch_limit,
                     per_source_limit=per_source_cap,
                     freshness=freshness,
                     date_restrict=date_restrict,

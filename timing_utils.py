@@ -14,6 +14,7 @@ class TimingRecorder:
         self._total_ms: Optional[float] = None
         self.llm_calls: List[Dict[str, Any]] = []
         self.search_sources: List[Dict[str, Any]] = []
+        self.tool_calls: List[Dict[str, Any]] = []
 
     def start(self) -> None:
         if not self.enabled:
@@ -53,6 +54,25 @@ class TimingRecorder:
         if extra:
             entry.update(extra)
         self.llm_calls.append(entry)
+
+    def record_tool_call(
+        self,
+        *,
+        tool: str,
+        duration_ms: float,
+        success: bool = True,
+        extra: Optional[Dict[str, Any]] = None,
+    ) -> None:
+        if not self.enabled:
+            return
+        entry: Dict[str, Any] = {
+            "tool": tool,
+            "duration_ms": round(duration_ms, 2),
+            "success": success,
+        }
+        if extra:
+            entry.update(extra)
+        self.tool_calls.append(entry)
 
     def record_search_timing(
         self,
@@ -105,4 +125,6 @@ class TimingRecorder:
             payload["search_sources"] = self.search_sources
         if self.llm_calls:
             payload["llm_calls"] = self.llm_calls
+        if self.tool_calls:
+            payload["tool_calls"] = self.tool_calls
         return payload

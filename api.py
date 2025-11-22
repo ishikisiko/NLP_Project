@@ -111,8 +111,12 @@ class LLMClient:
         if extra_messages:
             messages.extend(extra_messages)
         
-        # Handle images ONLY for Grok models as requested
-        if images and "grok" in self.model_id.lower():
+        # Handle images for supported vision models
+        # We enable this for known vision-capable models or if explicitly requested
+        vision_keywords = ["grok", "gpt-4", "claude-3", "gemini", "glm-4v", "vision", "minimax"]
+        is_vision_model = any(k in self.model_id.lower() for k in vision_keywords)
+        
+        if images and is_vision_model:
              content_list = [{"type": "text", "text": user_prompt}]
              for img in images:
                  b64 = img.get("base64", "")
@@ -129,6 +133,8 @@ class LLMClient:
                  })
              messages.append({"role": "user", "content": content_list})
         else:
+             if images:
+                 print(f"[LLMClient] Warning: Images provided but model '{self.model_id}' may not support vision or is not in the allowlist. Sending text only.")
              messages.append({"role": "user", "content": user_prompt})
 
         payload = {

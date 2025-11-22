@@ -34,6 +34,46 @@ class SearchClient:
     def get_last_timings(self) -> List[Dict[str, Any]]:
         return list(self._last_timings)
 
+    def _is_valid_search_result(self, title: str, url: str, snippet: str) -> bool:
+        """Filter out invalid or irrelevant search results."""
+        # Skip if all fields are empty
+        if not (title or url or snippet):
+            return False
+        
+        # Common patterns for invalid search result pages
+        invalid_patterns = [
+            r"^search results?(\s+for:?|\s*\|)",  # "Search results for:", "Search results |"
+            r"^untitled\s*$",  # "Untitled"
+            r"^search\s*\|\s*",  # "Search | xxx"
+            r"^sorry,?\s+(no|we)",  # "Sorry, no results", "Sorry, we"
+            r"^no\s+results?\s+(found|available)",  # "No results found"
+            r"^\d+\s+results?$",  # "10 results"
+            r"^page\s+not\s+found",  # "Page not found"
+            r"^error\s+\d+",  # "Error 404"
+            r"^buletin$", # Specific garbage pattern observed
+        ]
+        
+        title_lower = title.lower()
+        for pattern in invalid_patterns:
+            if re.match(pattern, title_lower, re.IGNORECASE):
+                return False
+        
+        # Skip URLs that are clearly search engine pages
+        invalid_url_patterns = [
+            r"/search\?",  # Search query pages
+            r"/results\?",  # Results pages
+            r"google\.com/search",
+            r"bing\.com/search",
+            r"yahoo\.com/search",
+        ]
+        
+        url_lower = url.lower()
+        for pattern in invalid_url_patterns:
+            if re.search(pattern, url_lower):
+                return False
+        
+        return True
+
     def search(
         self,
         query: str,
@@ -107,13 +147,14 @@ class SerpAPISearchClient(SearchClient):
                     snippet = " ".join(snippet)
 
                 if title or link or snippet:
-                    hits.append(
-                        SearchHit(
-                            title=title.strip(),
-                            url=link.strip(),
-                            snippet=snippet.strip(),
+                    if self._is_valid_search_result(title.strip(), link.strip(), snippet.strip()):
+                        hits.append(
+                            SearchHit(
+                                title=title.strip(),
+                                url=link.strip(),
+                                snippet=snippet.strip(),
+                            )
                         )
-                    )
             return hits
         except Exception as exc:
             if error_message is None:
@@ -377,7 +418,8 @@ class MCPWebSearchClient(SearchClient):
                     snippet = (entry.get("content") or entry.get("snippet") or entry.get("description") or "").strip()
                     if not (title or url or snippet):
                         continue
-                    hits.append(SearchHit(title=title, url=url, snippet=snippet))
+                    if self._is_valid_search_result(title, url, snippet):
+                        hits.append(SearchHit(title=title, url=url, snippet=snippet))
                     if len(hits) >= limit:
                         return hits
 
@@ -403,7 +445,8 @@ class MCPWebSearchClient(SearchClient):
                 snippet = str(snippet_value).strip()
                 if not (title or url or snippet):
                     continue
-                hits.append(SearchHit(title=title, url=url, snippet=snippet))
+                if self._is_valid_search_result(title, url, snippet):
+                    hits.append(SearchHit(title=title, url=url, snippet=snippet))
                 if len(hits) >= limit:
                     break
 
@@ -484,44 +527,7 @@ class GoogleSearchClient(SearchClient):
         self.safe = (safe or "").strip().lower() or None  # Safe search
         self.date_restrict = (date_restrict or "").strip() or None  # Time range filter (e.g., d3, w1, m2, y1)
 
-    def _is_valid_search_result(self, title: str, url: str, snippet: str) -> bool:
-        """Filter out invalid or irrelevant search results."""
-        # Skip if all fields are empty
-        if not (title or url or snippet):
-            return False
-        
-        # Common patterns for invalid search result pages
-        invalid_patterns = [
-            r"^search results?(\s+for:?|\s*\|)",  # "Search results for:", "Search results |"
-            r"^untitled\s*$",  # "Untitled"
-            r"^search\s*\|\s*",  # "Search | xxx"
-            r"^sorry,?\s+(no|we)",  # "Sorry, no results", "Sorry, we"
-            r"^no\s+results?\s+(found|available)",  # "No results found"
-            r"^\d+\s+results?$",  # "10 results"
-            r"^page\s+not\s+found",  # "Page not found"
-            r"^error\s+\d+",  # "Error 404"
-        ]
-        
-        title_lower = title.lower()
-        for pattern in invalid_patterns:
-            if re.match(pattern, title_lower, re.IGNORECASE):
-                return False
-        
-        # Skip URLs that are clearly search engine pages
-        invalid_url_patterns = [
-            r"/search\?",  # Search query pages
-            r"/results\?",  # Results pages
-            r"google\.com/search",
-            r"bing\.com/search",
-            r"yahoo\.com/search",
-        ]
-        
-        url_lower = url.lower()
-        for pattern in invalid_url_patterns:
-            if re.search(pattern, url_lower):
-                return False
-        
-        return True
+
 
     def search(
         self,
@@ -762,7 +768,8 @@ class YouSearchClient(SearchClient):
             if not (title or url or snippet_text):
                 continue
 
-            hits.append(SearchHit(title=title, url=url, snippet=snippet_text))
+            if self._is_valid_search_result(title, url, snippet_text):
+                hits.append(SearchHit(title=title, url=url, snippet=snippet_text))
             if len(hits) >= limit:
                 break
 

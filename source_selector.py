@@ -313,7 +313,7 @@ class IntelligentSourceSelector:
 
         location_hint = self._extract_weather_location(query)
         if not location_hint:
-            return {"handled": True, "error": "cannot_parse_location"}
+            return {"handled": False, "reason": "cannot_parse_location", "skipped": True}
 
         geocode = self._geocode_text(location_hint, timing_recorder=timing_recorder)
         if not geocode or geocode.get("error"):
@@ -355,7 +355,7 @@ class IntelligentSourceSelector:
     ) -> Dict[str, Any]:
         parsed = self._extract_route(query)
         if not parsed:
-            return {"handled": True, "error": "cannot_parse_route"}
+            return {"handled": False, "skipped": True, "reason": "cannot_parse_route"}
 
         origin_geo = self._geocode_text(parsed["origin"], timing_recorder=timing_recorder)
         dest_geo = self._geocode_text(parsed["destination"], timing_recorder=timing_recorder)
@@ -417,7 +417,8 @@ class IntelligentSourceSelector:
     ) -> Dict[str, Any]:
         symbol = self._extract_finance_symbol(query)
         if not symbol:
-            return {"handled": True, "error": "cannot_parse_symbol"}
+            # 无法提取代码时跳过而不报错，交由通用搜索处理
+            return {"handled": False, "reason": "cannot_parse_symbol", "skipped": True}
 
         if not self.finnhub_api_key:
             return {"handled": True, "error": "missing_finnhub_api_key"}
@@ -451,7 +452,7 @@ class IntelligentSourceSelector:
 
         entity = self._extract_sports_entity(query)
         if not entity:
-            return {"handled": True, "error": "cannot_parse_sports_entity"}
+            return {"handled": False, "reason": "cannot_parse_sports_entity", "skipped": True}
 
         if not self.sportsdb_api_key:
             return {"handled": True, "error": "missing_sportsdb_api_key"}

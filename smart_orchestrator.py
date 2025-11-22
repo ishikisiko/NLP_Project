@@ -3,6 +3,8 @@ from __future__ import annotations
 import json
 import os
 import time
+import requests
+import base64
 from typing import Any, Dict, List, Optional
 
 from api import LLMClient
@@ -70,6 +72,7 @@ class SmartSearchOrchestrator:
         self._search_pipeline: Optional[NoRAGBaseline] = None
         self._local_signature: Optional[tuple] = None
         self._hybrid_signature: Optional[tuple] = None
+        self.google_api_key = google_api_key
         selector_client = classifier_llm_client or self.llm_client
         self.source_selector = IntelligentSourceSelector(
             llm_client=selector_client,
@@ -129,20 +132,31 @@ class SmartSearchOrchestrator:
         snapshot = self._snapshot_local_docs()
         has_docs = bool(snapshot)
 
-        if self._looks_like_small_talk(effective_query):
-            return self._finalize_with_timings(
-                self._respond_small_talk(
-                    query=query,
-                    max_tokens=max_tokens,
-                    temperature=temperature,
-                    allow_search=allow_search,
-                    has_docs=has_docs,
-                    timing_recorder=timing_recorder,
-                ),
-                timing_recorder,
-            )
-
         if images:
+            # Visual Retrieval Pipeline
+            visual_context = ""
+            if self.google_api_key:
+                try:
+                    visual_info = self._perform_visual_retrieval(images, timing_recorder)
+                    if visual_info:
+                        labels = [label.get("label") for label in visual_info.get("bestGuessLabels", [])]
+                        entities = [entity.get("description") for entity in visual_info.get("webEntities", []) if entity.get("description")]
+                        
+                        visual_context = (
+                            "我通过搜索引擎找到了关于这张图片的以下线索（元数据）：\n\n"
+                            f"最佳猜测标签：[{', '.join(labels)}]\n\n"
+                            f"关联实体：[{', '.join(entities)}]\n\n"
+                            "请结合图片内容和上述线索，准确告诉用户这是哪个学校的什么建筑。如果线索不足，请诚实告知。"
+                        )
+                except Exception as e:
+                    print(f"Visual retrieval failed: {e}")
+            
+            system_prompt = "你是一个智能视觉助手。用户上传了一张图片。"
+            if visual_context:
+                system_prompt += "\n\n" + visual_context
+            else:
+                system_prompt += "\n请结合图片内容回答用户的问题。注意：未能获取图片的外部元数据（如Google Vision结果），请完全依赖你的视觉能力进行识别。"
+
             return self._finalize_with_timings(
                 self._direct_answer_via_llm(
                     query=query,
@@ -160,6 +174,20 @@ class SmartSearchOrchestrator:
                     },
                     timing_recorder=timing_recorder,
                     images=images,
+                    system_prompt_override=system_prompt
+                ),
+                timing_recorder,
+            )
+
+        if self._looks_like_small_talk(effective_query):
+            return self._finalize_with_timings(
+                self._respond_small_talk(
+                    query=query,
+                    max_tokens=max_tokens,
+                    temperature=temperature,
+                    allow_search=allow_search,
+                    has_docs=has_docs,
+                    timing_recorder=timing_recorder,
                 ),
                 timing_recorder,
             )
@@ -650,12 +678,13 @@ class SmartSearchOrchestrator:
         decision_meta: Optional[Dict[str, Any]] = None,
         timing_recorder: Optional[TimingRecorder],
         images: Optional[List[Dict[str, str]]] = None,
+        system_prompt_override: Optional[str] = None,
     ) -> Dict[str, Any]:
         fallback = self._chat_with_timing(
             self.llm_client,
             label="direct_answer",
             timing_recorder=timing_recorder,
-            system_prompt=self.DIRECT_ANSWER_SYSTEM_PROMPT,
+            system_prompt=system_prompt_override or self.DIRECT_ANSWER_SYSTEM_PROMPT,
             user_prompt=query,
             max_tokens=max_tokens,
             temperature=temperature,
@@ -698,6 +727,56 @@ class SmartSearchOrchestrator:
         }
         self._merge_control(payload, control_payload)
         return payload
+
+    def _perform_visual_retrieval(self, images: List[Dict[str, str]], timing_recorder: Optional[TimingRecorder]) -> Optional[Dict[str, Any]]:
+        if not self.google_api_key or not images:
+            return None
+        
+        start = time.perf_counter()
+        try:
+            # Use the first image for visual retrieval
+            img = images[0]
+            b64_content = img.get("base64", "")
+            if "," in b64_content:
+                b64_content = b64_content.split(",")[1]
+            
+            url = f"https://vision.googleapis.com/v1/images:annotate?key={self.google_api_key}"
+            payload = {
+                "requests": [
+                    {
+                        "image": {
+                            "content": b64_content
+                        },
+                        "features": [
+                            {
+                                "type": "WEB_DETECTION"
+                            }
+                        ]
+                    }
+                ]
+            }
+            
+            response = requests.post(url, json=payload, timeout=10)
+            response.raise_for_status()
+            result = response.json()
+            
+            responses = result.get("responses", [])
+            if responses:
+                web_detection = responses[0].get("webDetection", {})
+                return web_detection
+            return None
+            
+        except Exception as e:
+            print(f"Google Cloud Vision API error: {e}")
+            return None
+        finally:
+            if timing_recorder:
+                duration_ms = (time.perf_counter() - start) * 1000
+                timing_recorder.record_tool_call(
+                    tool="google_vision",
+                    duration_ms=duration_ms,
+                    success=True # Simplified
+                )
 
     def _search_unavailable_response(
         self,
@@ -998,9 +1077,6 @@ class SmartSearchOrchestrator:
             "掰掰",
             "謝謝",
             "感謝",
-            "hello",
-            "hi",
-            "bye",
         ]
         lowered_full = stripped.lower()
         if any(token in lowered_full for token in substring_triggers):

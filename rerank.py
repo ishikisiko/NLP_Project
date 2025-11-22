@@ -61,7 +61,7 @@ class Qwen3Reranker(BaseReranker):
         for idx, hit in enumerate(hits):
             snippet = hit.snippet or ""
             title = hit.title or ""
-            text = f"{title}\n\n{snippet}".strip()
+            text = f"{title}\n{hit.url}\n{snippet}".strip()
             if not text:
                 text = hit.url or f"Result {idx + 1}"
             doc_texts.append(text)
@@ -151,13 +151,15 @@ class Qwen3Reranker(BaseReranker):
                     continue
                 document = item.get("document") or {}
                 # 尝试多种可能的 ID 字段名
-                doc_id = (
-                    item.get("index")  # DashScope 使用 index
-                    or document.get("index")
-                    or document.get("id")
-                    or item.get("document_id")
-                    or item.get("id")
-                )
+                doc_id = item.get("index")
+                if doc_id is None:
+                    doc_id = document.get("index")
+                if doc_id is None:
+                    doc_id = document.get("id")
+                if doc_id is None:
+                    doc_id = item.get("document_id")
+                if doc_id is None:
+                    doc_id = item.get("id")
                 score = (
                     item.get("relevance_score")
                     or item.get("score")
