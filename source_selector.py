@@ -547,6 +547,22 @@ class IntelligentSourceSelector:
         return None
 
     def _extract_finance_symbol(self, query: str) -> str:
+        # 常见指数名称到符号的映射
+        index_map = {
+            "hang seng index": "^HSI",
+            "恒生指数": "^HSI",
+            "nasdaq": "^IXIC",
+            "纳斯达克": "^IXIC",
+            "dow jones": "^DJI",
+            "道琼斯": "^DJI",
+            "s&p 500": "^GSPC",
+            "标普500": "^GSPC",
+        }
+        query_lower = query.lower()
+        for iname, symbol in index_map.items():
+            if iname in query_lower:
+                return symbol
+
         # 加密货币常见名称到符号映射
         crypto_map = {
             "比特币": "BTC",
@@ -556,7 +572,6 @@ class IntelligentSourceSelector:
             "莱特币": "LTC",
             "索拉纳": "SOL",
         }
-        query_lower = query.lower()
         for cname, symbol in crypto_map.items():
             if cname.lower() in query_lower:
                 return symbol
@@ -573,12 +588,12 @@ class IntelligentSourceSelector:
         # LLM fallback
         if self.use_llm and self.llm_client:
             prompt = (
-                "从用户问题中提取股票代码或加密货币符号（美股如AAPL，A股如600000，加密货币如BTC），"
-                "输出JSON {\"symbol\": \"AAPL\" 或 \"BTC\" 等}。"
+                "从用户问题中提取股票代码、指数代码或加密货币符号（美股如AAPL，A股如600000，港股如0700.HK, 指数如^HSI, 加密货币如BTC），"
+                "输出JSON {\"symbol\": \"^HSI\"}。"
                 "无法提取返回空字符串。\n\n用户问题：" + query
             )
             response = self.llm_client.chat(
-                system_prompt="Extract stock or crypto symbol.",
+                system_prompt="Extract stock, index, or crypto symbol.",
                 user_prompt=prompt,
                 max_tokens=100,
                 temperature=0.0,
@@ -586,8 +601,8 @@ class IntelligentSourceSelector:
             try:
                 payload = json.loads(response.get("content") or "{}")
                 symbol = payload.get("symbol") or ""
-                if isinstance(symbol, str) and re.match(r'^[A-Z]{1,5}$|^[0-9]{6}$', symbol):
-                    return symbol
+                if isinstance(symbol, str) and re.match(r'^[A-Z\^]{1,6}(\.HK)?$|^[0-9]{6}$', symbol, re.IGNORECASE):
+                    return symbol.upper()
             except Exception:
                 pass
         return ""
@@ -728,7 +743,8 @@ class IntelligentSourceSelector:
         if self.finnhub_api_key:
             try:
                 quote = self._call_finnhub_quote(symbol, timing_recorder=timing_recorder)
-                if quote and not quote.get("error"):
+                if quote and not quote.get("error") and quote.get("c", 0) != 0:
+                    quote["source_name"] = "Finnhub"
                     return quote
                 last_error = quote or {"error": "finnhub_no_response"}
             except Exception as exc:
@@ -738,6 +754,7 @@ class IntelligentSourceSelector:
         try:
             quote = self._call_yfinance_quote(symbol, timing_recorder=timing_recorder)
             if quote and not quote.get("error"):
+                quote["source_name"] = "Yahoo Finance (yfinance)"
                 return quote
             last_error = quote or {"error": "yfinance_no_data"}
         except Exception as exc:
@@ -747,6 +764,7 @@ class IntelligentSourceSelector:
         try:
             quote = self._call_yahoo_fin_quote(symbol, timing_recorder=timing_recorder)
             if quote and not quote.get("error"):
+                quote["source_name"] = "Yahoo Finance (yahoo-fin)"
                 return quote
             last_error = quote or {"error": "yahoo_fin_no_data"}
         except Exception as exc:
@@ -914,7 +932,7 @@ class IntelligentSourceSelector:
         def _num(val: Any) -> Optional[float]:
             try:
                 return float(val)
-            except Exception:
+            except (ValueError, TypeError):
                 return None
 
         # Finnhub: c (current), h (high), l (low), o (open), pc (prev close)
@@ -924,9 +942,20 @@ class IntelligentSourceSelector:
         o = _num(quote.get("o") or quote.get("open") or quote.get("regularMarketOpen"))
         pc = _num(quote.get("pc") or quote.get("previousClose") or quote.get("regularMarketPreviousClose"))
 
+        change = None
+        change_percent = None
+        if c is not None and pc is not None and pc != 0:
+            change = c - pc
+            change_percent = (change / pc) * 100
+
         parts: List[str] = []
         if c is not None:
             parts.append(f"当前价 {c:g}")
+        
+        if change is not None and change_percent is not None:
+            sign = "+" if change > 0 else ""
+            parts.append(f"涨跌 {sign}{change:.2f} ({sign}{change_percent:.2f}%)")
+
         if o is not None:
             parts.append(f"开盘 {o:g}")
         if h is not None and l is not None:
@@ -942,18 +971,12 @@ class IntelligentSourceSelector:
         if not parts:
             # 最后尝试把整个 quote 转为简短字符串
             try:
-                summary = json.dumps(quote, ensure_ascii=False)
+                summary = json.dumps({k: v for k, v in quote.items() if v is not None}, ensure_ascii=False)
                 return f"{symbol} 报价：{summary}"
             except Exception:
                 return f"{symbol} 报价获取成功，但无法解析具体字段。"
 
-        source = "unknown"
-        # 尝试推断数据来源
-        if any(k in quote for k in ("c", "pc")):
-            source = "Finnhub/yfinance"
-        elif any(k in quote for k in ("currentPrice", "regularMarketPrice")):
-            source = "yfinance"
-
+        source = quote.get("source_name", "unknown")
         return f"{symbol}：" + "，".join(parts) + f"（数据源: {source}）"
     
 
