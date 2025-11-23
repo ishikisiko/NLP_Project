@@ -1,5 +1,5 @@
 # Repository Guidelines
-
+Project should run in conda environment "env1"
 ## Project Structure & Module Organization
 Core orchestration lives in `main.py`, which wires together search (`search.py`), embedding-based retrieval (`local_rag.py`), and model clients (`api.py`, `no_rag_baseline.py`). `server.py` hosts the Flask API that powers the browser UI under `frontend/` (plain HTML/CSS/JS). Persisted uploads land in `uploads/`; clean this directory when rotating documents. Configuration secrets belong in `config.json` (copy from `config.example.json`) or an alternate path exposed via `NLP_CONFIG_PATH`.
 

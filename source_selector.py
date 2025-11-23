@@ -543,7 +543,15 @@ class IntelligentSourceSelector:
             "WHAT", "WHEN", "WHERE", "HOW", "IS", "ARE", "WAS", "WERE",
             "YEAR", "MONTH", "WEEK", "DAY", "TODAY", "NOW", "NEWS",
             "ANALYSIS", "TREND", "HISTORY", "PERFORMANCE", "VS", "OR",
-            "TOP", "BEST", "NEW", "OLD", "BIG", "SMALL", "BUY", "SELL"
+            "TOP", "BEST", "NEW", "OLD", "BIG", "SMALL", "BUY", "SELL",
+            "OF", "IN", "ON", "AT", "BY", "IT", "AS", "IF", "DO", "GO",
+            "MY", "ME", "WE", "UP", "SO", "NO", "KEY", "MODEL", "DATA",
+            "INFO", "SHOW", "TELL", "GIVE", "GET", "SET", "RUN", "USE",
+            "TRY", "ASK", "SAY", "SEE", "SAW", "LOT", "BIT", "PUT", "LET",
+            "ANY", "ALL", "ONE", "TWO", "SIX", "TEN", "HAS", "HAD", "NOT",
+            "BUT", "CAN", "MAY", "OUT", "OFF", "TAX", "LAW", "ACT", "ART",
+            "MAP", "APP", "WEB", "NET", "COM", "ORG", "EDU", "GOV", "MIL",
+            "INT", "DESCRIBE", "EXPLAIN", "ABOUT"
         }
         
         for m in candidates:
