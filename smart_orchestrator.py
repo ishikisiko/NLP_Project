@@ -16,6 +16,7 @@ from search import SearchClient
 from source_selector import IntelligentSourceSelector
 from time_parser import parse_time_constraint, TimeConstraint
 from timing_utils import TimingRecorder
+from current_time import get_current_date_str
 
 
 class SmartSearchOrchestrator:
@@ -128,7 +129,21 @@ class SmartSearchOrchestrator:
 
         # 解析查询中的时间限制
         time_constraint = parse_time_constraint(query)
+        
+        # 如果正则没有检测到时间限制，尝试使用LLM检测隐含的时间限制
+        if not time_constraint.days and self.llm_client:
+             llm_time_constraint = self._detect_time_constraint_with_llm(query, timing_recorder)
+             if llm_time_constraint:
+                 time_constraint = llm_time_constraint
+                 print(f"LLM detected time constraint: {time_constraint.days} days ({time_constraint.you_freshness})")
+
         effective_query = time_constraint.cleaned_query if time_constraint.days else query
+        
+        # 如果存在时间限制，将当前日期注入到查询中以提供上下文
+        if time_constraint.days:
+            current_date = get_current_date_str()
+            effective_query = f"{effective_query} (Current Date: {current_date})"
+            print(f"Injecting current date into query: {effective_query}")
 
         snapshot = self._snapshot_local_docs()
         has_docs = bool(snapshot)
@@ -1252,3 +1267,78 @@ class SmartSearchOrchestrator:
                     model=getattr(client, "model_id", None),
                     extra=extra,
                 )
+
+    def _detect_time_constraint_with_llm(
+        self,
+        query: str,
+        timing_recorder: Optional[TimingRecorder]
+    ) -> Optional[TimeConstraint]:
+        """Use LLM to detect implicit time constraints in the query."""
+        system_prompt = (
+            "You are a query analysis assistant. Your task is to determine if a user's query implies a need for "
+            "recent or time-sensitive information, even if no explicit time keywords are used.\n"
+            "Examples:\n"
+            "- 'How old is Trump' -> Implies 'now' -> Return 'month' or 'year'\n"
+            "- 'Latest iPhone features' -> Implies 'now' -> Return 'month'\n"
+            "- 'History of Rome' -> No time constraint -> Return null\n"
+            "- 'Python list methods' -> No time constraint -> Return null\n\n"
+            "Respond strictly in JSON format with the following structure:\n"
+            "{\n"
+            "  \"has_time_constraint\": boolean,\n"
+            "  \"time_range\": \"day\" | \"week\" | \"month\" | \"year\" | null,\n"
+            "  \"reason\": string\n"
+            "}"
+        )
+        
+        response = self._chat_with_timing(
+            self.llm_client,
+            label="time_detection",
+            timing_recorder=timing_recorder,
+            system_prompt=system_prompt,
+            user_prompt=f"Query: {query}",
+            max_tokens=100,
+            temperature=0.1,
+        )
+        
+        try:
+            content = response.get("content", "{}")
+            if not content:
+                return None
+                
+            # Handle potential markdown code blocks
+            if "```json" in content:
+                content = content.split("```json")[1].split("```")[0]
+            elif "```" in content:
+                content = content.split("```")[1].split("```")[0]
+                
+            data = json.loads(content)
+            
+            if data.get("has_time_constraint") and data.get("time_range"):
+                range_map = {
+                    "day": 1,
+                    "week": 7,
+                    "month": 30,
+                    "year": 365
+                }
+                days = range_map.get(data["time_range"])
+                if days:
+                    # Create a TimeConstraint object
+                    # We don't change the cleaned_query because there was no explicit keyword to remove
+                    tc = TimeConstraint(
+                        original_query=query,
+                        cleaned_query=query,
+                        days=days,
+                        time_expression="LLM_Inferred"
+                    )
+                    
+                    # Use the parser instance to help
+                    from time_parser import get_time_parser
+                    parser = get_time_parser()
+                    tc.you_freshness = parser._map_to_you_freshness(days)
+                    tc.google_date_restrict = parser._map_to_google_date_restrict(days)
+                    return tc
+                    
+        except Exception as e:
+            print(f"Error parsing LLM time detection response: {e}")
+            
+        return None

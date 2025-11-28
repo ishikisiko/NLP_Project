@@ -58,6 +58,9 @@ class TimeParser:
         
         # 小时 - 匹配 "最近N小时"、"这N小时"
         (r'(?:最近|这|过去)?\s*([一二三四五六七八九十0-9]+)\s*(?:小时|个小时)', 'hour'),
+        
+        # 现在 - 匹配 "现在"、"目前"、"如今"、"当前"
+        (r'(?:现在|目前|如今|当前)', 'now'),
     ]
     
     # 中文数字映射
@@ -107,6 +110,8 @@ class TimeParser:
             return 30
         elif unit == 'year':
             return 365
+        elif unit == 'now':
+            return 30  # "现在" 默认对应最近一个月，保证信息的新鲜度但不过于严格
         return 1
     
     def _map_to_you_freshness(self, days: int) -> str:
