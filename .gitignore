@@ -1,5 +1,6 @@
 # Configuration files with sensitive data
 config.json
+.iflow/*
 .claude/
 uploads/*
 results/*
@@ -55,3 +56,5 @@ terminal-tool.json
 terminal-security.json
 GEMINI.md
 AGENTS.md
+query_workflow_v2.mermaid
+.iflow/IFLOW.md

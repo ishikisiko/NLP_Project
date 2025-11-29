@@ -443,27 +443,50 @@ class IntelligentSourceSelector:
         is_history = any(kw in query_lower for kw in history_keywords)
         is_reasoning = any(kw in query_lower for kw in reasoning_keywords)
 
-        # Regex to extract days count if present (e.g. "5 days")
+        # Regex to extract time period if present (e.g. "5 days", "2年", "十年")
         period = "1d"
-        match_days = re.search(r'(\d+)\s*(?:天|days)', query_lower)
-        if match_days:
+        
+        # Check for years first (e.g. "2年", "3 years", "十年")
+        match_years = re.search(r'(十|(\d+))\s*(?:年|years?)', query_lower)
+        if match_years:
             is_history = True
-            days = int(match_days.group(1))
-            # Map to yfinance valid periods roughly
-            if days <= 5:
-                period = "5d"
-            elif days <= 30:
-                period = "1mo"
-            elif days <= 90:
-                period = "3mo"
-            elif days <= 180:
-                period = "6mo"
-            elif days <= 365:
+            if match_years.group(1) == "十":
+                years = 10
+            else:
+                years = int(match_years.group(2))
+            
+            # Map years to yfinance valid periods
+            if years <= 1:
                 period = "1y"
+            elif years <= 2:
+                period = "2y"
+            elif years <= 5:
+                period = "5y"
+            elif years <= 10:
+                period = "10y"
             else:
                 period = "max"
-        elif is_history:
-            period = "1mo"  # Default history if not specified
+        else:
+            # Check for days (e.g. "5天", "10 days")
+            match_days = re.search(r'(\d+)\s*(?:天|days)', query_lower)
+            if match_days:
+                is_history = True
+                days = int(match_days.group(1))
+                # Map to yfinance valid periods roughly
+                if days <= 5:
+                    period = "5d"
+                elif days <= 30:
+                    period = "1mo"
+                elif days <= 90:
+                    period = "3mo"
+                elif days <= 180:
+                    period = "6mo"
+                elif days <= 365:
+                    period = "1y"
+                else:
+                    period = "max"
+            elif is_history:
+                period = "1mo"  # Default history if not specified
 
         results = []
         for symbol in symbols:
@@ -483,7 +506,22 @@ class IntelligentSourceSelector:
                 "symbols": symbols,
             }
 
+        # Identify key events for historical data
+        key_events = []
+        if is_history:
+            for result in results:
+                if not result.get("error") and "yearly_returns" in result:
+                    events = self._identify_key_events(result, query)
+                    if events:
+                        key_events.extend(events)
+        
         answer = self._format_finance_answer_multi(results, is_history)
+        
+        # Add key events to answer if any were identified
+        if key_events:
+            answer += "\n\n🔍 **关键事件分析**:\n"
+            for event in key_events:
+                answer += f"   • {event}\n"
         
         return {
             "handled": True,
@@ -492,6 +530,7 @@ class IntelligentSourceSelector:
             "symbols": symbols,
             "data": results,
             "answer": answer,
+            "key_events": key_events,
             # If the user asks for reasons/analysis, we must continue to the main search pipeline
             # to retrieve news/web content, while providing the data we found as context.
             "continue_search": is_reasoning
@@ -513,13 +552,79 @@ class IntelligentSourceSelector:
             if name in query_upper:
                 symbols.add(sym)
 
-        # 2. Common Crypto
+        # 2. Crypto Map
         crypto_map = {
-            "比特币": "BTC-USD", "BTC": "BTC-USD",
-            "以太坊": "ETH-USD", "ETH": "ETH-USD",
+            "BTC": "BTC-USD",
+            "BITCOIN": "BTC-USD",
+            "ETH": "ETH-USD",
+            "ETHEREUM": "ETH-USD",
         }
         for name, sym in crypto_map.items():
             if name in query_upper:
+                symbols.add(sym)
+
+        # 2.5. Chinese Company Name Map
+        chinese_company_map = {
+            "苹果": "AAPL",
+            "苹果公司": "AAPL",
+            "微软": "MSFT",
+            "微软公司": "MSFT",
+            "谷歌": "GOOGL",
+            "谷歌公司": "GOOGL",
+            "亚马逊": "AMZN",
+            "亚马逊公司": "AMZN",
+            "Amazon": "AMZN",
+            "特斯拉": "TSLA",
+            "特斯拉公司": "TSLA",
+            "脸书": "META",
+            "脸书公司": "META",
+            "Meta": "META",
+            "英伟达": "NVDA",
+            "英伟达公司": "NVDA",
+            "阿里巴巴": "BABA",
+            "阿里巴巴集团": "BABA",
+            "腾讯": "0700.HK",
+            "腾讯控股": "0700.HK",
+            "台积电": "TSM",
+            "台积电公司": "TSM",
+            "比亚迪": "BYD",
+            "比亚迪公司": "BYD",
+            "茅台": "600519.SS",
+            "贵州茅台": "600519.SS",
+            "中国平安": "601318.SS",
+            "平安": "601318.SS",
+            "中国移动": "0941.HK",
+            "中国联通": "600050.SS",
+            "中国电信": "601728.SS",
+            "京东": "JD",
+            "京东集团": "JD",
+            "百度": "BIDU",
+            "百度公司": "BIDU",
+            "网易": "NTES",
+            "网易公司": "NTES",
+            "小米": "1810.HK",
+            "小米集团": "1810.HK",
+            "美团": "3690.HK",
+            "美团点评": "3690.HK",
+            "拼多多": "PDD",
+            "拼多多公司": "PDD",
+            "蔚来": "NIO",
+            "蔚来汽车": "NIO",
+            "理想汽车": "LI",
+            "小鹏汽车": "XPEV",
+            "标普500": "^GSPC",
+            "标普": "^GSPC",
+            "道琼斯": "^DJI",
+            "道指": "^DJI",
+            "纳斯达克": "^IXIC",
+            "纳指": "^IXIC",
+            "恒生指数": "^HSI",
+            "恒指": "^HSI",
+        }
+        
+        # Check for Chinese company names
+        for name, sym in chinese_company_map.items():
+            if name in query:
                 symbols.add(sym)
 
         # 3. Regex for Stock Symbols
@@ -532,10 +637,10 @@ class IntelligentSourceSelector:
         matches_digits = re.findall(r'(?<!\d)\d{6}(?!\d)', query)
         symbols.update(matches_digits)
 
-        # Matches: NVDA, AMD (2-5 letters)
+        # Matches: NVDA, AMD, AMAZON (2-6 letters)
         # Improved regex to handle mixed language boundaries and case insensitivity
-        # Look for 2-5 letter words not surrounded by other letters
-        candidates = re.findall(r'(?<![a-zA-Z])[a-zA-Z]{2,5}(?![a-zA-Z])', query)
+        # Look for 2-6 letter words not surrounded by other letters
+        candidates = re.findall(r'(?<![a-zA-Z])[a-zA-Z]{2,6}(?![a-zA-Z])', query)
         
         stopwords = {
             "AND", "THE", "FOR", "WHO", "WHY", "USD", "HKD", "RMB", 
@@ -560,12 +665,108 @@ class IntelligentSourceSelector:
 
         return list(symbols)
 
+    def _identify_key_events(self, stock_data: Dict[str, Any], query: str) -> List[str]:
+        """Identify key events based on stock performance data."""
+        events = []
+        symbol = stock_data.get("symbol", "Unknown")
+        
+        # Analyze yearly returns for significant events
+        yearly_returns = stock_data.get("yearly_returns", [])
+        if yearly_returns:
+            # Find best and worst years
+            best_year = max(yearly_returns, key=lambda x: x["return"])
+            worst_year = min(yearly_returns, key=lambda x: x["return"])
+            
+            if best_year["return"] > 30:
+                events.append(f"{best_year['year']}年表现强劲，上涨{best_year['return']:.2f}%")
+            
+            if worst_year["return"] < -20:
+                events.append(f"{worst_year['year']}年表现疲软，下跌{abs(worst_year['return']):.2f}%")
+            
+            # Check for consecutive up/down years
+            consecutive_up = 0
+            consecutive_down = 0
+            max_consecutive_up = 0
+            max_consecutive_down = 0
+            
+            for i, year_data in enumerate(yearly_returns):
+                if year_data["return"] > 0:
+                    consecutive_up += 1
+                    consecutive_down = 0
+                    max_consecutive_up = max(max_consecutive_up, consecutive_up)
+                else:
+                    consecutive_down += 1
+                    consecutive_up = 0
+                    max_consecutive_down = max(max_consecutive_down, consecutive_down)
+            
+            if max_consecutive_up >= 3:
+                events.append(f"曾连续{max_consecutive_up}年上涨，表现持续向好")
+            
+            if max_consecutive_down >= 2:
+                events.append(f"曾连续{max_consecutive_down}年下跌，面临调整压力")
+        
+        # Analyze volatility
+        volatility = stock_data.get("volatility")
+        if volatility is not None:
+            if volatility > 40:
+                events.append("价格波动极大，市场情绪不稳定")
+            elif volatility > 30:
+                events.append("价格波动较大，投资风险较高")
+        
+        # Analyze drawdown
+        max_drawdown = stock_data.get("max_drawdown")
+        if max_drawdown is not None and max_drawdown < -40:
+            events.append(f"曾经历大幅回撤({max_drawdown:.2f}%)，需注意风险控制")
+        
+        # Analyze trend and momentum
+        trend = stock_data.get("trend_direction", "")
+        momentum = stock_data.get("momentum")
+        momentum_desc = stock_data.get("momentum_desc", "")
+        
+        if "强劲上涨" in trend and momentum and momentum > 10:
+            events.append("当前呈现强劲上涨趋势，短期动量充足")
+        elif "大幅下跌" in trend and momentum and momentum < -10:
+            events.append("近期表现疲软，短期动量不足")
+        
+        # Check for moving average signals
+        ma_20 = stock_data.get("ma_20")
+        ma_50 = stock_data.get("ma_50")
+        ma_200 = stock_data.get("ma_200")
+        current_price = stock_data.get("end_price")
+        
+        if all(x is not None for x in [ma_20, ma_50, ma_200, current_price]):
+            if current_price > ma_20 > ma_50 > ma_200:
+                events.append("技术面呈现多头排列，长期趋势向好")
+            elif current_price < ma_20 < ma_50 < ma_200:
+                events.append("技术面呈现空头排列，长期趋势向淡")
+        
+        # Add symbol-specific insights if available
+        symbol_insights = {
+            "^GSPC": "标普500指数",
+            "^DJI": "道琼斯指数",
+            "^IXIC": "纳斯达克指数",
+            "^HSI": "恒生指数",
+            "AAPL": "苹果公司",
+            "MSFT": "微软公司",
+            "GOOGL": "谷歌公司",
+            "TSLA": "特斯拉公司",
+            "AMZN": "亚马逊公司",
+        }
+        
+        symbol_name = symbol_insights.get(symbol, symbol)
+        if symbol_name != symbol:
+            events.insert(0, f"分析对象：{symbol_name}({symbol})")
+        
+        return events
+
     def _query_stock_history(self, symbol: str, period: str, timing_recorder: Optional[TimingRecorder] = None) -> Dict[str, Any]:
-        """Fetch historical data using yfinance."""
+        """Fetch historical data using yfinance with technical indicators."""
         start = time.perf_counter()
         try:
             # Ensure yfinance is available
             import yfinance as yf
+            import numpy as np
+            
             ticker = yf.Ticker(symbol)
             # Fetch history
             df = ticker.history(period=period)
@@ -580,7 +781,72 @@ class IntelligentSourceSelector:
                 change = end_price - start_price
                 pct_change = (change / start_price) * 100
                 
-                # Serialize a summary
+                # Calculate technical indicators
+                closes = df['Close'].values
+                
+                # 1. Moving averages
+                ma_20 = None
+                ma_50 = None
+                ma_200 = None
+                
+                if len(closes) >= 20:
+                    ma_20 = np.mean(closes[-20:])
+                if len(closes) >= 50:
+                    ma_50 = np.mean(closes[-50:])
+                if len(closes) >= 200:
+                    ma_200 = np.mean(closes[-200:])
+                
+                # 2. Volatility (standard deviation of daily returns)
+                daily_returns = np.diff(closes) / closes[:-1]
+                volatility = np.std(daily_returns) * np.sqrt(252) * 100  # Annualized volatility
+                
+                # 3. Maximum drawdown
+                cumulative_returns = np.cumprod(1 + daily_returns)
+                running_max = np.maximum.accumulate(cumulative_returns)
+                drawdowns = (cumulative_returns - running_max) / running_max
+                max_drawdown = np.min(drawdowns) * 100
+                
+                # 4. Yearly returns (if data spans multiple years)
+                yearly_returns = []
+                if len(df) > 365:
+                    df_years = df.groupby(df.index.year)
+                    for year, group in df_years:
+                        if len(group) > 1:  # Need at least 2 days to calculate return
+                            year_start = group.iloc[0]['Close']
+                            year_end = group.iloc[-1]['Close']
+                            year_return = ((year_end - year_start) / year_start) * 100
+                            yearly_returns.append({"year": year, "return": year_return})
+                
+                # 5. Trend analysis
+                trend_direction = "横盘"
+                if pct_change > 20:
+                    trend_direction = "强劲上涨"
+                elif pct_change > 10:
+                    trend_direction = "温和上涨"
+                elif pct_change < -20:
+                    trend_direction = "大幅下跌"
+                elif pct_change < -10:
+                    trend_direction = "温和下跌"
+                
+                # 6. Price momentum (recent 30 days vs previous 30 days)
+                momentum = None
+                momentum_desc = "无法计算"
+                if len(closes) >= 60:
+                    recent_30 = np.mean(closes[-30:])
+                    prev_30 = np.mean(closes[-60:-30])
+                    momentum = ((recent_30 - prev_30) / prev_30) * 100
+                    if momentum > 5:
+                        momentum_desc = "强劲上升"
+                    elif momentum > 2:
+                        momentum_desc = "温和上升"
+                    elif momentum < -5:
+                        momentum_desc = "快速下降"
+                    elif momentum < -2:
+                        momentum_desc = "温和下降"
+                    else:
+                        momentum_desc = "基本稳定"
+                
+                # Serialize a summary with technical indicators
                 history_summary = {
                     "start_date": str(df.index[0].date()),
                     "end_date": str(df.index[-1].date()),
@@ -590,6 +856,15 @@ class IntelligentSourceSelector:
                     "pct_change": pct_change,
                     "high": df['High'].max(),
                     "low": df['Low'].min(),
+                    "volatility": volatility,
+                    "max_drawdown": max_drawdown,
+                    "trend_direction": trend_direction,
+                    "ma_20": ma_20,
+                    "ma_50": ma_50,
+                    "ma_200": ma_200,
+                    "momentum": momentum,
+                    "momentum_desc": momentum_desc,
+                    "yearly_returns": yearly_returns,
                     "daily_data": [
                         {"date": str(idx.date()), "close": row['Close'], "volume": row['Volume']}
                         for idx, row in df.iterrows()
@@ -619,7 +894,7 @@ class IntelligentSourceSelector:
                 continue
             
             if is_history:
-                # Format historical summary
+                # Format historical summary with enhanced analysis
                 pct = res.get("pct_change", 0)
                 sign = "+" if pct >= 0 else ""
                 
@@ -633,20 +908,97 @@ class IntelligentSourceSelector:
                 l_str = f"{l_p:.2f}" if isinstance(l_p, (int, float)) else "N/A"
                 h_str = f"{h_p:.2f}" if isinstance(h_p, (int, float)) else "N/A"
 
-                daily_str = ""
-                if "daily_data" in res:
-                    daily_lines = ["   - 每日收盘:"]
-                    for d in res["daily_data"]:
-                        daily_lines.append(f"     {d['date']}: {d['close']:.2f}")
-                    daily_str = "\n" + "\n".join(daily_lines)
-
-                parts.append(
+                # Enhanced analysis with technical indicators
+                analysis_parts = []
+                
+                # Basic performance
+                analysis_parts.append(
                     f"📊 **{sym}** ({res.get('start_date', '?')} 至 {res.get('end_date', '?')}):\n"
                     f"   - 涨跌幅: {sign}{pct:.2f}%\n"
                     f"   - 收盘价: {s_str} -> {e_str}\n"
                     f"   - 期间波动: {l_str} - {h_str}"
-                    f"{daily_str}"
                 )
+                
+                # Trend analysis
+                trend = res.get("trend_direction", "未知")
+                analysis_parts.append(f"\n   - 趋势分析: {trend}")
+                
+                # Volatility and risk
+                volatility = res.get("volatility")
+                if volatility is not None:
+                    vol_level = "低" if volatility < 15 else "中" if volatility < 30 else "高"
+                    analysis_parts.append(f"\n   - 年化波动率: {volatility:.2f}% ({vol_level}风险)")
+                
+                # Maximum drawdown
+                max_dd = res.get("max_drawdown")
+                if max_dd is not None:
+                    analysis_parts.append(f"\n   - 最大回撤: {max_dd:.2f}%")
+                
+                # Moving averages
+                ma_20 = res.get("ma_20")
+                ma_50 = res.get("ma_50")
+                ma_200 = res.get("ma_200")
+                
+                if ma_20 is not None:
+                    analysis_parts.append(f"\n   - 20日均线: {ma_20:.2f}")
+                    if e_p is not None:
+                        ma20_signal = "上方" if e_p > ma_20 else "下方"
+                        analysis_parts.append(f"     (当前价格在20日均线{ma20_signal})")
+                
+                if ma_50 is not None:
+                    analysis_parts.append(f"\n   - 50日均线: {ma_50:.2f}")
+                    if e_p is not None:
+                        ma50_signal = "上方" if e_p > ma_50 else "下方"
+                        analysis_parts.append(f"     (当前价格在50日均线{ma50_signal})")
+                
+                if ma_200 is not None:
+                    analysis_parts.append(f"\n   - 200日均线: {ma_200:.2f}")
+                    if e_p is not None:
+                        ma200_signal = "上方" if e_p > ma_200 else "下方"
+                        analysis_parts.append(f"     (当前价格在200日均线{ma200_signal})")
+                
+                # Momentum
+                momentum = res.get("momentum")
+                momentum_desc = res.get("momentum_desc")
+                if momentum is not None and momentum_desc is not None:
+                    analysis_parts.append(f"\n   - 近期动量: {momentum_desc} ({momentum:.2f}%)")
+                
+                # Yearly returns
+                yearly_returns = res.get("yearly_returns", [])
+                if yearly_returns:
+                    analysis_parts.append("\n   - 年度收益率:")
+                    for yr in yearly_returns:
+                        yr_sign = "+" if yr["return"] >= 0 else ""
+                        analysis_parts.append(f"     {yr['year']}年: {yr_sign}{yr['return']:.2f}%")
+                
+                # Key insights summary
+                insights = []
+                if pct > 20:
+                    insights.append("整体表现强劲，显著上涨")
+                elif pct < -20:
+                    insights.append("整体表现疲软，显著下跌")
+                
+                if volatility is not None:
+                    if volatility > 30:
+                        insights.append("价格波动较大，投资风险较高")
+                    elif volatility < 15:
+                        insights.append("价格相对稳定，投资风险较低")
+                
+                if max_dd is not None and max_dd < -30:
+                    insights.append("曾经历较大回撤，需注意风险控制")
+                
+                if ma_20 is not None and ma_50 is not None and ma_200 is not None:
+                    if e_p > ma_20 > ma_50 > ma_200:
+                        insights.append("技术面呈现多头排列，趋势向好")
+                    elif e_p < ma_20 < ma_50 < ma_200:
+                        insights.append("技术面呈现空头排列，趋势向淡")
+                
+                if insights:
+                    analysis_parts.append("\n   - 关键洞察:")
+                    for insight in insights:
+                        analysis_parts.append(f"     • {insight}")
+                
+                parts.append("".join(analysis_parts))
             else:
                 # Format current quote (reuse logic or simple)
                 c = res.get("c") or res.get("currentPrice")
