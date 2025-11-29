@@ -276,17 +276,22 @@ class IntelligentSourceSelector:
         if not cleaned_query or domain == "general":
             return cleaned_query
 
+        # 体育领域使用更具体的关键词以获取详细数据（球员得分、比赛统计）
         domain_context = {
             "weather": "current weather forecast humidity wind speed",
             "transportation": "live traffic status transit delays road conditions",
             "finance": "latest market data stock price trend analysis",
-            "sports": "latest match scores results standings fixtures sports news",
+            "sports": "box score player stats 球员得分统计 比赛数据",
         }
 
-        supplemental_keywords = " ".join(self.domain_keywords.get(domain, [])[:3])
-        enhanced_query = " ".join(
-            part for part in [cleaned_query, domain_context.get(domain, ""), supplemental_keywords] if part
-        )
+        # 体育领域特殊处理：检测是否是求具体比赛数据的查询
+        if domain == "sports":
+            enhanced_query = self._enhance_sports_query(cleaned_query)
+        else:
+            supplemental_keywords = " ".join(self.domain_keywords.get(domain, [])[:3])
+            enhanced_query = " ".join(
+                part for part in [cleaned_query, domain_context.get(domain, ""), supplemental_keywords] if part
+            )
 
         try:
             print(f"🧠 领域增强查询: {enhanced_query}")
@@ -294,6 +299,70 @@ class IntelligentSourceSelector:
             # 在不支持UTF-8的环境中静默跳过打印
             pass
         return enhanced_query
+    
+    def _enhance_sports_query(self, query: str) -> str:
+        """增强体育查询以获取详细的比赛和球员数据
+        
+        策略：添加新闻导向和数据导向的精准关键词，获取最新比赛战报
+        """
+        query_lower = query.lower()
+        
+        # NBA队伍关键词映射（中英文）
+        nba_teams = {
+            "湖人": "Lakers", "勇士": "Warriors", "独行侠": "Mavericks",
+            "篮网": "Nets", "凯尔特人": "Celtics", "热火": "Heat",
+            "雷霆": "Thunder", "掘金": "Nuggets", "太阳": "Suns",
+            "快船": "Clippers", "国王": "Kings", "开拓者": "Blazers",
+            "火箭": "Rockets", "马刺": "Spurs", "灰熊": "Grizzlies",
+            "鹈鹕": "Pelicans", "森林狼": "Timberwolves", "爵士": "Jazz",
+            "雄鹿": "Bucks", "公牛": "Bulls", "骑士": "Cavaliers",
+            "活塞": "Pistons", "步行者": "Pacers", "老鹰": "Hawks",
+            "黄蜂": "Hornets", "魔术": "Magic", "尼克斯": "Knicks",
+            "76人": "76ers", "猛龙": "Raptors", "奇才": "Wizards"
+        }
+        
+        # 检测查询中的NBA球队
+        detected_team = None
+        detected_team_en = None
+        for cn_name, en_name in nba_teams.items():
+            if cn_name in query_lower or en_name.lower() in query_lower:
+                detected_team = cn_name
+                detected_team_en = en_name
+                break
+        
+        # 检测是否是最近比赛查询
+        recent_keywords = ["上一场", "最近", "最新", "昨天", "今天", "概况",
+                          "last", "latest", "recent", "yesterday", "today"]
+        is_recent = any(kw in query_lower for kw in recent_keywords)
+        
+        # 构建精准增强 - 使用新闻导向关键词获取战报而非赛程
+        enhancements = []
+        
+        if detected_team and is_recent:
+            # 最近比赛查询：添加新闻/战报导向关键词
+            # 核心策略：
+            # 1. "战报" "highlights" 获取比赛新闻而非赛程
+            # 2. "得分 统计" "box score" 获取球员数据
+            # 3. 添加英文关键词提升搜索质量
+            enhancements = [
+                f"{detected_team_en} game highlights",  # 英文新闻关键词
+                "战报",  # 中文新闻关键词
+                "得分统计",  # 球员数据关键词
+                "box score"  # 英文数据关键词
+            ]
+        elif detected_team:
+            # 一般球队查询
+            enhancements = [detected_team_en, "比赛战报", "score highlights"]
+        elif is_recent:
+            # 最近比赛但未指定球队
+            enhancements = ["战报", "得分统计", "highlights box score"]
+        else:
+            # 通用体育查询
+            enhancements = ["最新战报", "results highlights"]
+        
+        # 组合：原始查询 + 精准关键词
+        enhanced = query + " " + " ".join(enhancements)
+        return enhanced
     
     def get_source_details(self, domain: str) -> List[Dict[str, Any]]:
         """获取指定领域的详细数据源信息"""

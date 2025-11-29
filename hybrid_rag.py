@@ -17,7 +17,10 @@ HYBRID_SYSTEM_PROMPT = (
     "You are an information assistant. Combine insights from web search results and local documents. "
     "Only answer with information grounded in the provided sources, and cite them inline when relevant "
     "using (Web #) for search results and (Doc #) for local references. If the context is insufficient, "
-    "state that explicitly. Always answer in the same language as the user's question."
+    "state that explicitly. Always answer in the same language as the user's question. "
+    "CRITICAL: Do NOT fabricate, invent, or guess any specific data (such as scores, numbers, statistics, dates, or names) "
+    "that is not EXPLICITLY stated in the provided sources. "
+    "If specific information is not found in the sources, clearly state '未在搜索结果中找到具体数据' or 'specific data not found'."
 )
 
 
@@ -99,10 +102,15 @@ class HybridRAG:
         return (
             "Use the following information to answer the question. "
             "Cite web sources as (Web #) and local passages as (Doc #).\n\n"
+            "IMPORTANT RULES:\n"
+            "1. ONLY include specific data (scores, statistics, numbers, names) that are EXPLICITLY mentioned in the sources below.\n"
+            "2. If specific data (like individual player scores, detailed statistics) is NOT found in the sources, "
+            "say '搜索结果中未提及具体数据' or 'not mentioned in sources' - DO NOT guess or invent numbers.\n"
+            "3. For sports queries: only report scores and statistics that appear verbatim in the snippets.\n\n"
             f"Web Search Results:\n{search_block}\n\n"
             f"Local Document Passages:\n{local_block}\n\n"
             f"Question: {query}\n\n"
-            "Answer:"
+            "Answer (remember: NO fabricated data):"
         )
 
     def answer(

@@ -13,8 +13,11 @@ from timing_utils import TimingRecorder
 
 DEFAULT_SYSTEM_PROMPT = (
     "You are an information assistant. "
-    "Answer user questions concisely using only the provided search results. "
-    "When unsure, acknowledge the uncertainty. "
+    "Answer user questions concisely using ONLY the provided search results. "
+    "CRITICAL: Do NOT fabricate, invent, or guess any specific data (such as scores, numbers, statistics, dates, or names) "
+    "that is not EXPLICITLY stated in the search results. "
+    "If specific information is not found in the search results, clearly state '未在搜索结果中找到具体数据' or 'specific data not found in search results'. "
+    "When unsure, acknowledge the uncertainty instead of guessing. "
     "Always answer in the same language as the user's question."
 )
 
@@ -62,9 +65,14 @@ class NoRAGBaseline:
             "Use them to answer the question at the end. "
             "When citing sources, use the format (URL 1), (URL 2), etc., "
             "where the number corresponds to the search result number.\n\n"
+            "IMPORTANT RULES:\n"
+            "1. ONLY include specific data (scores, statistics, numbers, names) that are EXPLICITLY mentioned in the search results below.\n"
+            "2. If specific data (like individual player scores, detailed statistics) is NOT found in the search results, "
+            "say '搜索结果中未提及具体数据' or 'not mentioned in search results' - DO NOT guess or invent numbers.\n"
+            "3. For sports queries: only report scores and statistics that appear verbatim in the snippets.\n\n"
             f"Search Results:\n{context_block}\n\n"
             f"Question: {query}\n\n"
-            "Answer:"
+            "Answer (remember: NO fabricated data):"
         )
 
     def answer(
