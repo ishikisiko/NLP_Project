@@ -50,6 +50,13 @@ class IntelligentSourceSelector:
                 "体育", "足球", "篮球", "网球", "比赛", "比分", "NBA", "奥运", "世界杯", "英超",
                 "sports", "football", "basketball", "tennis", "match", "score", "NBA", "Olympics", "Premier League"
             ],
+            "location": [
+                "最近", "附近", "距离", "哪家", "哪里", "在哪", "周边", "旁边",
+                "最近的", "附近的", "离", "靠近",
+                "距離", "哪裡", "週邊",
+                "nearest", "nearby", "closest", "near", "around", "where is",
+                "find", "locate", "location", "place", "places"
+            ],
             "general": []  # 通用领域，无特定关键词
         }
         
@@ -86,12 +93,12 @@ class IntelligentSourceSelector:
             "finance": [
                 {
                     "name": "yfinance",
-                    "type": "python_lib", 
+                    "type": "python_lib",
                     "description": "Yahoo Finance Python库 (yfinance)"
                 },
                 {
                     "name": "yahoo-fin",
-                    "type": "python_lib", 
+                    "type": "python_lib",
                     "description": "Yahoo Finance Python库 (yahoo-fin)"
                 },
                 {
@@ -107,6 +114,20 @@ class IntelligentSourceSelector:
                     "url": "https://www.thesportsdb.com/api/v1/json/1/search_all_events.php",
                     "type": "rest_api",
                     "description": "体育赛事、球队和比分数据"
+                }
+            ],
+            "location": [
+                {
+                    "name": "Google Places API (Nearby Search)",
+                    "url": "https://places.googleapis.com/v1/places:searchNearby",
+                    "type": "rest_api",
+                    "description": "搜索附近的地点/兴趣点(POI)"
+                },
+                {
+                    "name": "Google Geocoding API",
+                    "url": "https://maps.googleapis.com/maps/api/geocode/json",
+                    "type": "rest_api",
+                    "description": "将地点名称解析为坐标"
                 }
             ],
             "general": [
@@ -171,8 +192,9 @@ class IntelligentSourceSelector:
         allowed = sorted(self.domain_keywords.keys())
         prompt = (
             "你是NLU分类器，请将用户问题归类到固定领域中。"
-            "只允许以下标签: weather, transportation, finance, sports, general."
-            "输出严格的JSON，例如 {\"domain\": \"sports\"}.\n\n"
+            "只允许以下标签: weather, transportation, finance, sports, location, general.\n"
+            "- location: 用于查找附近地点、最近的商店/餐厅/设施等（如'最近的KFC'、'附近的医院'）\n"
+            "输出严格的JSON，例如 {\"domain\": \"location\"}.\n\n"
             f"用户问题: {query}"
         )
         try:
@@ -286,7 +308,7 @@ class IntelligentSourceSelector:
     ) -> Optional[Dict[str, Any]]:
         """调用特定领域的Google Cloud API并返回结构化结果"""
         domain = (domain or "").lower().strip()
-        if domain not in {"weather", "transportation", "finance", "sports"}:
+        if domain not in {"weather", "transportation", "finance", "sports", "location"}:
             return None
 
         if not self.google_api_key:
@@ -300,6 +322,8 @@ class IntelligentSourceSelector:
             return self._handle_finance(query, timing_recorder=timing_recorder)
         if domain == "sports":
             return self._handle_sports(query, timing_recorder=timing_recorder)
+        if domain == "location":
+            return self._handle_location(query, timing_recorder=timing_recorder)
 
     def _handle_weather(
         self,
@@ -537,7 +561,14 @@ class IntelligentSourceSelector:
         }
 
     def _extract_finance_symbols(self, query: str) -> List[str]:
-        """Extract multiple finance symbols from query."""
+        """Extract multiple finance symbols from query.
+        
+        Uses a multi-step approach:
+        1. Check predefined mappings (indices, crypto, company names)
+        2. Use regex patterns to find potential symbols
+        3. Use LLM to identify company names and get stock symbols (if available)
+        4. Use Google Search as fallback to find stock symbols for unknown companies
+        """
         symbols = set()
         query_upper = query.upper()
         
@@ -552,15 +583,37 @@ class IntelligentSourceSelector:
             if name in query_upper:
                 symbols.add(sym)
 
-        # 2. Crypto Map
+        # 2. Crypto Map (including Chinese names)
         crypto_map = {
             "BTC": "BTC-USD",
             "BITCOIN": "BTC-USD",
+            "比特币": "BTC-USD",
+            "比特幣": "BTC-USD",
             "ETH": "ETH-USD",
             "ETHEREUM": "ETH-USD",
+            "以太坊": "ETH-USD",
+            "以太幣": "ETH-USD",
+            "DOGE": "DOGE-USD",
+            "狗狗币": "DOGE-USD",
+            "狗狗幣": "DOGE-USD",
+            "SOL": "SOL-USD",
+            "SOLANA": "SOL-USD",
+            "索拉纳": "SOL-USD",
+            "XRP": "XRP-USD",
+            "瑞波币": "XRP-USD",
+            "瑞波幣": "XRP-USD",
+            "ADA": "ADA-USD",
+            "艾达币": "ADA-USD",
+            "DOT": "DOT-USD",
+            "波卡": "DOT-USD",
+            "MATIC": "MATIC-USD",
+            "AVAX": "AVAX-USD",
+            "LINK": "LINK-USD",
+            "UNI": "UNI-USD",
         }
+        # Check both uppercase and original query for crypto
         for name, sym in crypto_map.items():
-            if name in query_upper:
+            if name in query_upper or name in query:
                 symbols.add(sym)
 
         # 2.5. Chinese Company Name Map
@@ -581,6 +634,15 @@ class IntelligentSourceSelector:
             "Meta": "META",
             "英伟达": "NVDA",
             "英伟达公司": "NVDA",
+            # Intel 和 AMD
+            "英特尔": "INTC",
+            "英特尔公司": "INTC",
+            "Intel": "INTC",
+            "INTEL": "INTC",
+            "超威半导体": "AMD",
+            "超微半导体": "AMD",
+            "AMD公司": "AMD",
+            # 其他公司
             "阿里巴巴": "BABA",
             "阿里巴巴集团": "BABA",
             "腾讯": "0700.HK",
@@ -612,6 +674,10 @@ class IntelligentSourceSelector:
             "蔚来汽车": "NIO",
             "理想汽车": "LI",
             "小鹏汽车": "XPEV",
+            "高通": "QCOM",
+            "高通公司": "QCOM",
+            "博通": "AVGO",
+            "博通公司": "AVGO",
             "标普500": "^GSPC",
             "标普": "^GSPC",
             "道琼斯": "^DJI",
@@ -643,7 +709,7 @@ class IntelligentSourceSelector:
         candidates = re.findall(r'(?<![a-zA-Z])[a-zA-Z]{2,6}(?![a-zA-Z])', query)
         
         stopwords = {
-            "AND", "THE", "FOR", "WHO", "WHY", "USD", "HKD", "RMB", 
+            "AND", "THE", "FOR", "WHO", "WHY", "USD", "HKD", "RMB",
             "STOCK", "PRICE", "DAYS", "PAST", "COMPARE", "WITH", "FROM", "TO",
             "WHAT", "WHEN", "WHERE", "HOW", "IS", "ARE", "WAS", "WERE",
             "YEAR", "MONTH", "WEEK", "DAY", "TODAY", "NOW", "NEWS",
@@ -656,14 +722,233 @@ class IntelligentSourceSelector:
             "ANY", "ALL", "ONE", "TWO", "SIX", "TEN", "HAS", "HAD", "NOT",
             "BUT", "CAN", "MAY", "OUT", "OFF", "TAX", "LAW", "ACT", "ART",
             "MAP", "APP", "WEB", "NET", "COM", "ORG", "EDU", "GOV", "MIL",
-            "INT", "DESCRIBE", "EXPLAIN", "ABOUT"
+            "INT", "DESCRIBE", "EXPLAIN", "ABOUT",
+            # Date/time related words that should not be treated as stock symbols
+            "DATE", "TIME", "CURRENT", "UTC", "ISO",
+            # Company name words that are not stock symbols themselves
+            "INTEL", "NVIDIA", "GOOGLE", "APPLE", "AMAZON", "TESLA",
         }
         
         for m in candidates:
             if m.upper() not in stopwords:
                 symbols.add(m.upper())
 
+        # 4. If no symbols found, try LLM extraction
+        if not symbols and self.use_llm and self.llm_client:
+            llm_symbols = self._extract_symbols_with_llm(query)
+            if llm_symbols:
+                symbols.update(llm_symbols)
+        
+        # 5. If still no symbols, try Google Search fallback
+        if not symbols and self.google_api_key:
+            search_symbols = self._extract_symbols_with_search(query)
+            if search_symbols:
+                symbols.update(search_symbols)
+
         return list(symbols)
+    
+    def _extract_symbols_with_llm(self, query: str) -> List[str]:
+        """Use LLM to extract company names and convert to stock symbols."""
+        if not self.llm_client:
+            return []
+        
+        prompt = (
+            "从用户的金融查询中提取所有公司名称，并返回它们对应的股票代码。\n"
+            "输出JSON格式，例如：{\"symbols\": [\"AAPL\", \"MSFT\"]}\n"
+            "规则：\n"
+            "- 美股使用标准代码（如AAPL, MSFT, GOOGL）\n"
+            "- 港股使用.HK后缀（如0700.HK）\n"
+            "- A股使用.SS（上海）或.SZ（深圳）后缀（如600519.SS）\n"
+            "- 如果无法确定股票代码，返回空数组\n"
+            "- 只返回确定的股票代码，不要猜测\n\n"
+            f"用户查询：{query}"
+        )
+        
+        try:
+            response = self.llm_client.chat(
+                system_prompt="You are a financial assistant that extracts stock symbols from queries.",
+                user_prompt=prompt,
+                max_tokens=200,
+                temperature=0.0,
+            )
+            content = response.get("content", "{}")
+            
+            # Try to parse JSON
+            try:
+                parsed = json.loads(content)
+            except json.JSONDecodeError:
+                # Try to extract JSON from response
+                start = content.find("{")
+                end = content.rfind("}")
+                if start != -1 and end != -1 and end > start:
+                    try:
+                        parsed = json.loads(content[start:end+1])
+                    except json.JSONDecodeError:
+                        return []
+                else:
+                    return []
+            
+            symbols = parsed.get("symbols", [])
+            if isinstance(symbols, list):
+                # Validate symbols format
+                valid_symbols = []
+                for sym in symbols:
+                    if isinstance(sym, str) and sym.strip():
+                        sym = sym.strip().upper()
+                        # Basic validation: alphanumeric with optional suffix
+                        if re.match(r'^[A-Z0-9\^]{1,6}(\.[A-Z]{1,2})?$', sym):
+                            valid_symbols.append(sym)
+                return valid_symbols
+        except Exception as exc:
+            try:
+                print(f"[LLM Symbol Extraction] Error: {exc}")
+            except (UnicodeEncodeError, UnicodeDecodeError):
+                pass
+        
+        return []
+    
+    def _extract_symbols_with_search(self, query: str) -> List[str]:
+        """Use Google Search to find stock symbols for companies mentioned in query."""
+        if not self.google_api_key:
+            return []
+        
+        # Extract potential company names from query
+        # Look for capitalized words or Chinese company patterns
+        company_patterns = [
+            r'([A-Z][a-z]+(?:\s+[A-Z][a-z]+)*)',  # Capitalized words like "Intel Corporation"
+            r'([\u4e00-\u9fff]{2,}(?:公司|集团|控股|科技|电子|半导体)?)',  # Chinese company names
+        ]
+        
+        potential_companies = []
+        for pattern in company_patterns:
+            matches = re.findall(pattern, query)
+            potential_companies.extend(matches)
+        
+        if not potential_companies:
+            return []
+        
+        symbols = []
+        for company in potential_companies[:3]:  # Limit to 3 companies to avoid too many API calls
+            symbol = self._search_stock_symbol(company)
+            if symbol:
+                symbols.append(symbol)
+        
+        return symbols
+    
+    def _search_stock_symbol(self, company_name: str) -> Optional[str]:
+        """Search for a company's stock symbol using Google Search."""
+        if not self.google_api_key:
+            return None
+        
+        # Construct search query
+        search_query = f"{company_name} stock symbol ticker"
+        
+        try:
+            # Use Google Custom Search API
+            params = {
+                "key": self.google_api_key,
+                "cx": os.getenv("GOOGLE_CX", ""),  # Custom Search Engine ID
+                "q": search_query,
+                "num": 3,
+            }
+            
+            # Skip if no CX configured
+            if not params["cx"]:
+                return self._search_stock_symbol_simple(company_name)
+            
+            response = requests.get(
+                "https://www.googleapis.com/customsearch/v1",
+                params=params,
+                timeout=self.request_timeout,
+            )
+            response.raise_for_status()
+            data = response.json()
+            
+            items = data.get("items", [])
+            for item in items:
+                title = item.get("title", "")
+                snippet = item.get("snippet", "")
+                combined = f"{title} {snippet}"
+                
+                # Look for stock symbol patterns in results
+                # Pattern: (SYMBOL) or SYMBOL: or ticker: SYMBOL
+                symbol_patterns = [
+                    r'\(([A-Z]{1,5})\)',  # (AAPL)
+                    r'(?:ticker|symbol|stock)[\s:]+([A-Z]{1,5})',  # ticker: AAPL
+                    r'([A-Z]{1,5})(?:\s+stock|\s+shares)',  # AAPL stock
+                ]
+                
+                for pattern in symbol_patterns:
+                    match = re.search(pattern, combined, re.IGNORECASE)
+                    if match:
+                        symbol = match.group(1).upper()
+                        # Validate it's a real symbol by checking with yfinance
+                        if self._validate_symbol(symbol):
+                            return symbol
+            
+        except Exception as exc:
+            try:
+                print(f"[Google Search Symbol] Error: {exc}")
+            except (UnicodeEncodeError, UnicodeDecodeError):
+                pass
+        
+        return None
+    
+    def _search_stock_symbol_simple(self, company_name: str) -> Optional[str]:
+        """Simple fallback to search stock symbol using yfinance search."""
+        try:
+            import yfinance as yf
+            
+            # Try common variations
+            variations = [
+                company_name,
+                company_name.replace(" ", ""),
+                company_name.split()[0] if " " in company_name else company_name,
+            ]
+            
+            for variation in variations:
+                try:
+                    # Try to get ticker info directly
+                    ticker = yf.Ticker(variation)
+                    info = ticker.info
+                    if info and info.get("symbol"):
+                        return info["symbol"]
+                except Exception:
+                    continue
+            
+            # Try yfinance search (if available)
+            try:
+                # yfinance doesn't have a direct search API, but we can try common patterns
+                # For well-known companies, the symbol is often the first few letters
+                if len(company_name) >= 2:
+                    potential_symbol = company_name[:4].upper()
+                    ticker = yf.Ticker(potential_symbol)
+                    info = ticker.info
+                    if info and info.get("symbol") and info.get("shortName"):
+                        # Verify the company name matches
+                        if company_name.lower() in info.get("shortName", "").lower():
+                            return info["symbol"]
+            except Exception:
+                pass
+                
+        except Exception as exc:
+            try:
+                print(f"[yfinance Symbol Search] Error: {exc}")
+            except (UnicodeEncodeError, UnicodeDecodeError):
+                pass
+        
+        return None
+    
+    def _validate_symbol(self, symbol: str) -> bool:
+        """Validate if a symbol is a real stock symbol using yfinance."""
+        try:
+            import yfinance as yf
+            ticker = yf.Ticker(symbol)
+            info = ticker.info
+            # Check if we got valid data
+            return bool(info and (info.get("symbol") or info.get("shortName")))
+        except Exception:
+            return False
 
     def _identify_key_events(self, stock_data: Dict[str, Any], query: str) -> List[str]:
         """Identify key events based on stock performance data."""
@@ -1006,6 +1291,384 @@ class IntelligentSourceSelector:
 
         return "\n\n".join(parts)
 
+
+    def _handle_location(
+        self,
+        query: str,
+        timing_recorder: Optional[TimingRecorder] = None,
+    ) -> Dict[str, Any]:
+        """处理地点/POI搜索查询，如"距离HKUST最近的KFC是哪家"""
+        # 提取参考地点和目标类型
+        parsed = self._extract_location_query(query)
+        if not parsed:
+            return {"handled": False, "reason": "cannot_parse_location_query", "skipped": True}
+        
+        reference_location = parsed.get("reference_location")
+        target_type = parsed.get("target_type")
+        
+        if not reference_location or not target_type:
+            return {"handled": False, "reason": "missing_reference_or_target", "skipped": True}
+        
+        # 获取参考地点的坐标
+        geocode = self._geocode_text(reference_location, timing_recorder=timing_recorder)
+        if not geocode or geocode.get("error"):
+            return {
+                "handled": True,
+                "error": geocode.get("error") if geocode else "geocode_failed",
+                "reference_location": reference_location,
+            }
+        
+        lat = geocode.get("lat")
+        lng = geocode.get("lng")
+        
+        if lat is None or lng is None:
+            return {
+                "handled": True,
+                "error": "invalid_coordinates",
+                "reference_location": reference_location,
+            }
+        
+        # 使用 Google Places API 搜索附近地点
+        places_result = self._call_google_places_nearby(
+            lat=lat,
+            lng=lng,
+            keyword=target_type,
+            timing_recorder=timing_recorder,
+        )
+        
+        if not places_result or places_result.get("error"):
+            return {
+                "handled": True,
+                "error": places_result.get("error") if places_result else "places_search_failed",
+                "reference_location": geocode,
+                "target_type": target_type,
+            }
+        
+        places = places_result.get("places", [])
+        if not places:
+            return {
+                "handled": True,
+                "error": "no_places_found",
+                "reference_location": geocode,
+                "target_type": target_type,
+                "answer": f"在 {geocode.get('formatted_address', reference_location)} 附近未找到 {target_type}。",
+            }
+        
+        # 格式化答案
+        answer = self._format_location_answer(
+            reference_location=reference_location,
+            geocode=geocode,
+            target_type=target_type,
+            places=places,
+        )
+        
+        return {
+            "handled": True,
+            "provider": "google_places",
+            "endpoint": "https://places.googleapis.com/v1/places:searchNearby",
+            "reference_location": geocode,
+            "target_type": target_type,
+            "data": places_result,
+            "answer": answer,
+        }
+
+    def _extract_location_query(self, query: str) -> Optional[Dict[str, str]]:
+        """从查询中提取参考地点和目标类型"""
+        # 常见模式：
+        # "距离X最近的Y是哪家" / "X附近的Y" / "离X最近的Y"
+        # "nearest Y to X" / "Y near X"
+        
+        patterns_cn = [
+            r"距离(.+?)最近的(.+?)(?:是哪|在哪|有哪)",
+            r"离(.+?)最近的(.+?)(?:是哪|在哪|有哪)",
+            r"(.+?)附近的(.+?)(?:是哪|在哪|有哪)",
+            r"(.+?)附近有(?:什么|哪些)?(.+)",
+            r"(.+?)周边的(.+)",
+            r"距离(.+?)最近的(.+)",
+            r"离(.+?)最近的(.+)",
+            r"(.+?)附近的(.+)",
+        ]
+        
+        patterns_en = [
+            r"nearest\s+(.+?)\s+(?:to|from|near)\s+(.+)",
+            r"closest\s+(.+?)\s+(?:to|from|near)\s+(.+)",
+            r"(.+?)\s+near(?:est)?\s+(.+)",
+            r"find\s+(.+?)\s+near\s+(.+)",
+        ]
+        
+        # 尝试中文模式
+        for pattern in patterns_cn:
+            match = re.search(pattern, query, re.IGNORECASE)
+            if match:
+                reference = match.group(1).strip()
+                target = match.group(2).strip()
+                # 清理目标类型中的常见后缀
+                target = re.sub(r"(?:是哪家|在哪里|有哪些|是什么)$", "", target).strip()
+                if reference and target:
+                    return {"reference_location": reference, "target_type": target}
+        
+        # 尝试英文模式
+        for pattern in patterns_en:
+            match = re.search(pattern, query, re.IGNORECASE)
+            if match:
+                # 英文模式中目标和参考位置的顺序可能不同
+                g1 = match.group(1).strip()
+                g2 = match.group(2).strip()
+                # "nearest KFC to HKUST" -> target=KFC, reference=HKUST
+                # "KFC near HKUST" -> target=KFC, reference=HKUST
+                return {"reference_location": g2, "target_type": g1}
+        
+        # LLM fallback
+        if self.use_llm and self.llm_client:
+            prompt = (
+                "从用户问题中提取：\n"
+                "1. reference_location: 参考地点（用户想要从哪里出发/以哪里为中心）\n"
+                "2. target_type: 目标类型（用户想要找什么类型的地点，如餐厅、商店名称等）\n\n"
+                "输出JSON格式，例如：\n"
+                "{\"reference_location\": \"香港科技大学\", \"target_type\": \"KFC\"}\n\n"
+                "如果无法提取，返回空对象 {}\n\n"
+                f"用户问题：{query}"
+            )
+            try:
+                response = self.llm_client.chat(
+                    system_prompt="You extract location search parameters from queries.",
+                    user_prompt=prompt,
+                    max_tokens=200,
+                    temperature=0.0,
+                )
+                content = response.get("content", "{}")
+                parsed = json.loads(content)
+                ref = (parsed.get("reference_location") or "").strip()
+                target = (parsed.get("target_type") or "").strip()
+                if ref and target:
+                    return {"reference_location": ref, "target_type": target}
+            except Exception:
+                pass
+        
+        return None
+
+    def _call_google_places_nearby(
+        self,
+        lat: float,
+        lng: float,
+        keyword: str,
+        radius: int = 5000,
+        timing_recorder: Optional[TimingRecorder] = None,
+    ) -> Optional[Dict[str, Any]]:
+        """调用 Google Places API (New) 搜索附近地点"""
+        url = "https://places.googleapis.com/v1/places:searchNearby"
+        
+        headers = {
+            "Content-Type": "application/json",
+            "X-Goog-Api-Key": self.google_api_key,
+            "X-Goog-FieldMask": "places.displayName,places.formattedAddress,places.location,places.rating,places.userRatingCount,places.googleMapsUri,places.primaryType,places.shortFormattedAddress"
+        }
+        
+        payload = {
+            "locationRestriction": {
+                "circle": {
+                    "center": {
+                        "latitude": lat,
+                        "longitude": lng
+                    },
+                    "radius": radius
+                }
+            },
+            "maxResultCount": 10,
+            "languageCode": "zh-CN"
+        }
+        
+        # 添加关键词/文本查询
+        if keyword:
+            # 使用 includedTypes 或 textQuery 取决于关键词类型
+            # 对于品牌名称（如KFC），使用 textQuery 更合适
+            payload["textQuery"] = keyword
+        
+        start = time.perf_counter()
+        try:
+            response = requests.post(
+                url,
+                headers=headers,
+                json=payload,
+                timeout=self.request_timeout,
+            )
+            response.raise_for_status()
+            data = response.json()
+            return data
+        except requests.exceptions.HTTPError as exc:
+            # 尝试使用旧版 Places API 作为备选
+            return self._call_google_places_nearby_legacy(
+                lat=lat,
+                lng=lng,
+                keyword=keyword,
+                radius=radius,
+                timing_recorder=timing_recorder,
+            )
+        except Exception as exc:
+            return {"error": str(exc)}
+        finally:
+            if timing_recorder:
+                duration_ms = (time.perf_counter() - start) * 1000
+                timing_recorder.record_search_timing(
+                    source="google_places_nearby",
+                    label="Google Places Nearby",
+                    duration_ms=duration_ms,
+                )
+
+    def _call_google_places_nearby_legacy(
+        self,
+        lat: float,
+        lng: float,
+        keyword: str,
+        radius: int = 5000,
+        timing_recorder: Optional[TimingRecorder] = None,
+    ) -> Optional[Dict[str, Any]]:
+        """使用旧版 Google Places API (nearbysearch) 作为备选"""
+        url = "https://maps.googleapis.com/maps/api/place/nearbysearch/json"
+        
+        params = {
+            "location": f"{lat},{lng}",
+            "radius": radius,
+            "keyword": keyword,
+            "key": self.google_api_key,
+            "language": "zh-CN",
+        }
+        
+        start = time.perf_counter()
+        try:
+            response = requests.get(
+                url,
+                params=params,
+                timeout=self.request_timeout,
+            )
+            response.raise_for_status()
+            data = response.json()
+            
+            # 转换为统一格式
+            if data.get("status") == "OK" and data.get("results"):
+                places = []
+                for result in data["results"][:10]:
+                    place = {
+                        "displayName": {"text": result.get("name", "")},
+                        "formattedAddress": result.get("vicinity", ""),
+                        "location": {
+                            "latitude": result.get("geometry", {}).get("location", {}).get("lat"),
+                            "longitude": result.get("geometry", {}).get("location", {}).get("lng"),
+                        },
+                        "rating": result.get("rating"),
+                        "userRatingCount": result.get("user_ratings_total"),
+                    }
+                    places.append(place)
+                return {"places": places}
+            elif data.get("status") == "ZERO_RESULTS":
+                return {"places": []}
+            else:
+                return {"error": data.get("status", "unknown_error")}
+        except Exception as exc:
+            return {"error": str(exc)}
+        finally:
+            if timing_recorder:
+                duration_ms = (time.perf_counter() - start) * 1000
+                timing_recorder.record_search_timing(
+                    source="google_places_nearby_legacy",
+                    label="Google Places Nearby (Legacy)",
+                    duration_ms=duration_ms,
+                )
+
+    def _format_location_answer(
+        self,
+        reference_location: str,
+        geocode: Dict[str, Any],
+        target_type: str,
+        places: List[Dict[str, Any]],
+    ) -> str:
+        """格式化地点搜索结果"""
+        ref_address = geocode.get("formatted_address", reference_location)
+        ref_lat = geocode.get("lat")
+        ref_lng = geocode.get("lng")
+        
+        if not places:
+            return f"在 {ref_address} 附近未找到 {target_type}。"
+        
+        # 计算距离并排序
+        places_with_distance = []
+        for place in places:
+            place_lat = place.get("location", {}).get("latitude")
+            place_lng = place.get("location", {}).get("longitude")
+            
+            distance = None
+            if ref_lat and ref_lng and place_lat and place_lng:
+                # 使用 Haversine 公式计算距离
+                distance = self._haversine_distance(ref_lat, ref_lng, place_lat, place_lng)
+            
+            places_with_distance.append({
+                "place": place,
+                "distance": distance,
+            })
+        
+        # 按距离排序
+        places_with_distance.sort(key=lambda x: x["distance"] if x["distance"] is not None else float("inf"))
+        
+        # 格式化输出
+        lines = [f"📍 在 **{ref_address}** 附近找到以下 **{target_type}**：\n"]
+        
+        for i, item in enumerate(places_with_distance[:5], 1):
+            place = item["place"]
+            distance = item["distance"]
+            
+            name = place.get("displayName", {}).get("text", "未知名称")
+            address = place.get("formattedAddress") or place.get("shortFormattedAddress", "")
+            rating = place.get("rating")
+            rating_count = place.get("userRatingCount")
+            
+            line = f"{i}. **{name}**"
+            if distance is not None:
+                if distance < 1:
+                    line += f" - 约 {int(distance * 1000)} 米"
+                else:
+                    line += f" - 约 {distance:.1f} 公里"
+            if address:
+                line += f"\n   📫 {address}"
+            if rating:
+                stars = "⭐" * int(rating)
+                line += f"\n   {stars} {rating}"
+                if rating_count:
+                    line += f" ({rating_count} 条评价)"
+            
+            lines.append(line)
+        
+        # 添加最近的地点总结
+        if places_with_distance:
+            nearest = places_with_distance[0]
+            nearest_name = nearest["place"].get("displayName", {}).get("text", "未知")
+            nearest_dist = nearest["distance"]
+            
+            summary = f"\n\n✅ **最近的 {target_type}** 是 **{nearest_name}**"
+            if nearest_dist is not None:
+                if nearest_dist < 1:
+                    summary += f"，距离约 {int(nearest_dist * 1000)} 米。"
+                else:
+                    summary += f"，距离约 {nearest_dist:.1f} 公里。"
+            lines.append(summary)
+        
+        return "\n".join(lines)
+
+    @staticmethod
+    def _haversine_distance(lat1: float, lng1: float, lat2: float, lng2: float) -> float:
+        """使用 Haversine 公式计算两点之间的距离（公里）"""
+        import math
+        
+        R = 6371  # 地球半径（公里）
+        
+        lat1_rad = math.radians(lat1)
+        lat2_rad = math.radians(lat2)
+        delta_lat = math.radians(lat2 - lat1)
+        delta_lng = math.radians(lng2 - lng1)
+        
+        a = math.sin(delta_lat / 2) ** 2 + math.cos(lat1_rad) * math.cos(lat2_rad) * math.sin(delta_lng / 2) ** 2
+        c = 2 * math.atan2(math.sqrt(a), math.sqrt(1 - a))
+        
+        return R * c
 
     def _handle_sports(
         self,
