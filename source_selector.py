@@ -34,7 +34,10 @@ class IntelligentSourceSelector:
             "weather": [
                 "天气", "气温", "温度", "下雨", "下雪", "台风", "暴雨",
                 "天氣", "氣溫", "溫度", "颱風",
-                "weather", "temperature", "rain", "snow", "typhoon"
+                "weather", "temperature", "rain", "snow", "typhoon",
+                "空气质量", "空气污染", "AQI", "PM2.5", "PM10", "雾霾", "空气指数",
+                "air quality", "air pollution", "AQI", "PM2.5", "PM10", "smog", "haze",
+                "指数", "污染", "pm25", "pm10", "指数", "质量", "aqi", "pm2.5"
             ],
             "transportation": [
                 "交通", "公交", "地铁", "拥堵", "路况", "航班", "火车", "高铁",
@@ -49,6 +52,21 @@ class IntelligentSourceSelector:
             "sports": [
                 "体育", "足球", "篮球", "网球", "比赛", "比分", "NBA", "奥运", "世界杯", "英超",
                 "sports", "football", "basketball", "tennis", "match", "score", "NBA", "Olympics", "Premier League"
+            ],
+            "temporal_change": [
+                # 教育排名相关
+                "大学", "高校", "学院", "学校", "排名", "QS", "THE", "ARWU", "US News",
+                "university", "college", "ranking", "rankings", "education", "higher education",
+                "香港中文大學", "香港科技大學", "香港大學", "CUHK", "HKUST", "HKU",
+                "香港中文大学", "香港科技大学", "香港大学",
+                # 时间变化相关
+                "最近10年", "过去10年", "10年", "十年", "历年", "历史", "变化", "趋势", "发展",
+                "10 years", "decade", "historical", "trend", "development", "evolution",
+                "对比", "比较", "变化趋势", "时间序列", "年度", "逐年",
+                "comparison", "compare", "trend over time", "time series", "yearly", "year by year",
+                # 其他可能的时间变化查询
+                "增长", "下降", "波动", "变化率", "增长率", "涨跌",
+                "growth", "decline", "fluctuation", "rate of change", "growth rate", "rise and fall"
             ],
             "location": [
                 "最近", "附近", "距离", "哪家", "哪里", "在哪", "周边", "旁边",
@@ -70,10 +88,16 @@ class IntelligentSourceSelector:
                     "description": "Google Cloud 提供的实时天气数据"
                 },
                 {
+                    "name": "Google Air Quality API",
+                    "url": "https://airquality.googleapis.com/v1/currentConditions:lookup",
+                    "type": "rest_api",
+                    "description": "Google Cloud 提供的实时空气质量数据，包括AQI、PM2.5等污染物信息"
+                },
+                {
                     "name": "Google Geocoding API",
                     "url": "https://maps.googleapis.com/maps/api/geocode/json",
                     "type": "rest_api",
-                    "description": "用于将地点名称解析为坐标以便获取天气"
+                    "description": "用于将地点名称解析为坐标以便获取天气和空气质量"
                 }
             ],
             "transportation": [
@@ -114,6 +138,26 @@ class IntelligentSourceSelector:
                     "url": "https://www.thesportsdb.com/api/v1/json/1/search_all_events.php",
                     "type": "rest_api",
                     "description": "体育赛事、球队和比分数据"
+                }
+            ],
+            "temporal_change": [
+                {
+                    "name": "Google Search API",
+                    "url": "https://www.googleapis.com/customsearch/v1",
+                    "type": "search_api",
+                    "description": "时间变化相关数据搜索，包括历史排名、趋势分析等"
+                },
+                {
+                    "name": "Wikipedia API",
+                    "url": "https://en.wikipedia.org/api/rest_v1/page/summary/",
+                    "type": "knowledge_api",
+                    "description": "历史数据和知识库信息"
+                },
+                {
+                    "name": "Google Trends API",
+                    "url": "https://trends.googleapis.com/trends/v1/",
+                    "type": "rest_api",
+                    "description": "获取趋势数据和变化模式"
                 }
             ],
             "location": [
@@ -192,8 +236,9 @@ class IntelligentSourceSelector:
         allowed = sorted(self.domain_keywords.keys())
         prompt = (
             "你是NLU分类器，请将用户问题归类到固定领域中。"
-            "只允许以下标签: weather, transportation, finance, sports, location, general.\n"
+            "只允许以下标签: weather, transportation, finance, sports, temporal_change, location, general.\n"
             "- location: 用于查找附近地点、最近的商店/餐厅/设施等（如'最近的KFC'、'附近的医院'）\n"
+            "- temporal_change: 用于涉及时间变化的查询，如历史排名、趋势分析、年度对比等（如'最近10年排名变化'、'历年数据对比'）\n"
             "输出严格的JSON，例如 {\"domain\": \"location\"}.\n\n"
             f"用户问题: {query}"
         )
@@ -276,17 +321,20 @@ class IntelligentSourceSelector:
         if not cleaned_query or domain == "general":
             return cleaned_query
 
-        # 体育领域使用更具体的关键词以获取详细数据（球员得分、比赛统计）
+        # 各领域使用更具体的关键词以获取详细数据
         domain_context = {
             "weather": "current weather forecast humidity wind speed",
             "transportation": "live traffic status transit delays road conditions",
             "finance": "latest market data stock price trend analysis",
             "sports": "box score player stats 球员得分统计 比赛数据",
+            "temporal_change": "historical data trend analysis year by year comparison time series",
         }
 
-        # 体育领域特殊处理：检测是否是求具体比赛数据的查询
+        # 特殊领域处理：检测是否是求具体数据的查询
         if domain == "sports":
             enhanced_query = self._enhance_sports_query(cleaned_query)
+        elif domain == "temporal_change":
+            enhanced_query = self._enhance_temporal_change_query(cleaned_query)
         else:
             supplemental_keywords = " ".join(self.domain_keywords.get(domain, [])[:3])
             enhanced_query = " ".join(
@@ -364,6 +412,100 @@ class IntelligentSourceSelector:
         enhanced = query + " " + " ".join(enhancements)
         return enhanced
     
+    def _enhance_temporal_change_query(self, query: str) -> str:
+        """增强时间变化查询以获取详细的历史数据和趋势分析
+        
+        策略：添加时间变化相关的关键词，获取历史数据和趋势分析
+        """
+        query_lower = query.lower()
+        
+        # 香港大学关键词映射（中英文）
+        hk_universities = {
+            "香港中文大學": "CUHK", "香港科技大學": "HKUST", "香港大學": "HKU",
+            "香港中文大学": "CUHK", "香港科技大学": "HKUST", "香港大学": "HKU",
+            "中文大学": "CUHK", "科技大学": "HKUST", "香港大学": "HKU"
+        }
+        
+        # 检测查询中的香港大学
+        detected_universities = []
+        for cn_name, en_name in hk_universities.items():
+            if cn_name in query_lower or en_name.lower() in query_lower:
+                detected_universities.append((cn_name, en_name))
+        
+        # 检测是否是排名查询
+        ranking_keywords = ["排名", "rankings", "对比", "comparison", "比较", "compare"]
+        is_ranking_query = any(kw in query_lower for kw in ranking_keywords)
+        
+        # 检测是否是时间范围查询
+        time_keywords = ["最近10年", "过去10年", "10年", "十年", "10 years", "decade", "历年", "历史", "变化", "趋势"]
+        is_time_range_query = any(kw in query_lower for kw in time_keywords)
+        
+        # 检测是否是增长/变化查询
+        growth_keywords = ["增长", "下降", "波动", "变化率", "增长率", "涨跌", "growth", "decline", "fluctuation", "rate of change"]
+        is_growth_query = any(kw in query_lower for kw in growth_keywords)
+        
+        # 构建精准增强 - 使用时间变化导向关键词获取历史数据
+        enhancements = []
+        
+        if detected_universities and is_ranking_query:
+            # 特定大学排名查询
+            enhancements = [
+                "QS World University Rankings",  # QS排名关键词
+                "THE World University Rankings",  # THE排名关键词
+                "ARWU Academic Ranking",  # ARWU排名关键词
+                "历年排名对比",  # 中文排名对比关键词
+                "historical rankings comparison",  # 英文排名对比关键词
+                "ranking trends",  # 排名趋势
+                "year by year ranking"  # 年度排名
+            ]
+            if is_time_range_query:
+                enhancements.extend(["历年数据", "historical data", "trend analysis", "time series"])
+        elif detected_universities and is_growth_query:
+            # 特定大学增长/变化查询
+            enhancements = [
+                "historical performance",
+                "development trends",
+                "growth analysis",
+                "变化趋势分析",
+                "历史表现"
+            ]
+        elif detected_universities:
+            # 一般大学查询
+            enhancements = [
+                "university profile",
+                "学术排名",
+                "academic reputation",
+                "教育质量",
+                "historical development"
+            ]
+        elif is_ranking_query:
+            # 排名查询但未指定大学
+            enhancements = [
+                "QS World University Rankings",
+                "THE World University Rankings",
+                "世界大学排名",
+                "global university rankings"
+            ]
+            if is_time_range_query:
+                enhancements.extend(["历年变化", "ranking trends", "historical data", "time series analysis"])
+        elif is_growth_query:
+            # 一般增长/变化查询
+            enhancements = [
+                "historical trends",
+                "trend analysis",
+                "time series data",
+                "historical comparison",
+                "变化趋势",
+                "历史对比"
+            ]
+        else:
+            # 通用时间变化查询
+            enhancements = ["历史数据", "historical data", "趋势分析", "trend analysis"]
+        
+        # 组合：原始查询 + 精准关键词
+        enhanced = query + " " + " ".join(enhancements)
+        return enhanced
+    
     def get_source_details(self, domain: str) -> List[Dict[str, Any]]:
         """获取指定领域的详细数据源信息"""
         return self.domain_sources.get(domain, [])
@@ -399,6 +541,11 @@ class IntelligentSourceSelector:
         query: str,
         timing_recorder: Optional[TimingRecorder],
     ) -> Dict[str, Any]:
+        # 检测空气质量查询
+        air_quality_keywords = ["空气质量", "空气污染", "AQI", "PM2.5", "PM10", "雾霾", "空气指数",
+                               "air quality", "air pollution", "AQI", "PM2.5", "PM10", "smog", "haze"]
+        is_air_quality_query = any(kw in query for kw in air_quality_keywords)
+        
         # 检测预报查询，fallback 搜索
         forecast_keywords = ["明天", "后天", "预报", "forecast", "tomorrow"]
         if any(kw in query for kw in forecast_keywords):
@@ -416,6 +563,32 @@ class IntelligentSourceSelector:
                 "location": location_hint,
             }
 
+        # 如果是空气质量查询，使用空气质量API
+        if is_air_quality_query:
+            # 检查是否是中国地区（Google Air Quality API支持中国）
+            air_quality_payload = self._call_google_air_quality(
+                geocode["lat"],
+                geocode["lng"],
+                timing_recorder=timing_recorder,
+            )
+            if not air_quality_payload or air_quality_payload.get("error"):
+                return {
+                    "handled": True,
+                    "error": air_quality_payload.get("error") if air_quality_payload else "air_quality_request_failed",
+                    "location": geocode,
+                }
+
+            answer = self._format_air_quality_answer(location_hint, geocode, air_quality_payload)
+            return {
+                "handled": True,
+                "provider": "google",
+                "endpoint": "https://airquality.googleapis.com/v1/currentConditions:lookup",
+                "location": geocode,
+                "data": air_quality_payload,
+                "answer": answer,
+            }
+        
+        # 普通天气查询
         if "中国" in geocode.get("formatted_address", "") or "China" in geocode.get("formatted_address", ""):
             return {"handled": True, "skipped": True, "reason": "china_location_not_supported_by_google_weather", "location": geocode}
 
@@ -2188,6 +2361,54 @@ class IntelligentSourceSelector:
                     duration_ms=duration_ms,
                 )
 
+    def _call_google_air_quality(
+        self,
+        lat: float,
+        lng: float,
+        timing_recorder: Optional[TimingRecorder] = None,
+    ) -> Optional[Dict[str, Any]]:
+        """调用 Google Air Quality API 获取当前空气质量"""
+        url = "https://airquality.googleapis.com/v1/currentConditions:lookup"
+        headers = {
+            "Content-Type": "application/json",
+        }
+        payload = {
+            "location": {
+                "latitude": lat,
+                "longitude": lng
+            },
+            "extraComputations": [
+                "HEALTH_RECOMMENDATIONS",
+                "DOMINANT_POLLUTANT_CONCENTRATION",
+                "POLLUTANT_CONCENTRATION",
+                "LOCAL_AQI"
+            ],
+            "uaqiColorPalette": "RED_GREEN",
+            "universalAqi": True
+        }
+        
+        start = time.perf_counter()
+        try:
+            response = requests.post(
+                url,
+                headers=headers,
+                params={"key": self.google_api_key},
+                json=payload,
+                timeout=self.request_timeout,
+            )
+            response.raise_for_status()
+            return response.json()
+        except Exception as exc:
+            return {"error": str(exc)}
+        finally:
+            if timing_recorder:
+                duration_ms = (time.perf_counter() - start) * 1000
+                timing_recorder.record_search_timing(
+                    source="google_air_quality",
+                    label="Google Air Quality",
+                    duration_ms=duration_ms,
+                )
+
     def _format_weather_answer(
         self,
         location_hint: str,
@@ -2215,6 +2436,98 @@ class IntelligentSourceSelector:
             )
         except Exception:
             return f"{location_hint} 天气数据获取成功，但解析失败。"
+
+    def _format_air_quality_answer(
+        self,
+        location_hint: str,
+        geocode: Dict[str, Any],
+        air_quality_data: Dict[str, Any],
+    ) -> str:
+        """格式化空气质量回复"""
+        try:
+            location = geocode.get("formatted_address", location_hint)
+            
+            # 获取AQI信息
+            indexes = air_quality_data.get("indexes", [])
+            if not indexes:
+                return f"{location} 空气质量数据获取成功，但缺少AQI信息。"
+            
+            # 优先使用通用AQI (UAQI)
+            uaqi = next((idx for idx in indexes if idx.get("code") == "uaqi"), indexes[0])
+            aqi_value = uaqi.get("aqi", "未知")
+            aqi_category = uaqi.get("category", "未知")
+            dominant_pollutant = uaqi.get("dominantPollutant", "未知")
+            
+            # 获取污染物信息
+            pollutants = air_quality_data.get("pollutants", [])
+            pollutant_info = []
+            
+            # 查找主要污染物的详细信息
+            if pollutants and dominant_pollutant:
+                main_pollutant = next(
+                    (p for p in pollutants if p.get("code") == dominant_pollutant), 
+                    None
+                )
+                if main_pollutant:
+                    concentration = main_pollutant.get("concentration", {})
+                    value = concentration.get("value", "未知")
+                    units = concentration.get("units", "未知")
+                    display_name = main_pollutant.get("displayName", dominant_pollutant)
+                    pollutant_info.append(f"{display_name}: {value} {units}")
+            
+            # 获取健康建议
+            health_recommendations = air_quality_data.get("healthRecommendations", {})
+            general_recommendation = health_recommendations.get("generalPopulation", "")
+            
+            # 构建回复
+            answer = f"{location} 当前空气质量：\n"
+            answer += f"• AQI指数: {aqi_value} ({aqi_category})\n"
+            
+            if pollutant_info:
+                answer += f"• 主要污染物: {', '.join(pollutant_info)}\n"
+            
+            # 添加其他常见污染物信息
+            common_pollutants = ["pm25", "pm10", "o3", "no2", "so2", "co"]
+            other_pollutants = []
+            for pollutant_code in common_pollutants:
+                if pollutant_code == dominant_pollutant:
+                    continue  # 已作为主要污染物显示
+                pollutant = next(
+                    (p for p in pollutants if p.get("code") == pollutant_code), 
+                    None
+                )
+                if pollutant:
+                    concentration = pollutant.get("concentration", {})
+                    value = concentration.get("value")
+                    if value is not None:
+                        display_name = pollutant.get("displayName", pollutant_code)
+                        units = concentration.get("units", "")
+                        other_pollutants.append(f"{display_name}: {value} {units}")
+            
+            if other_pollutants:
+                answer += f"• 其他污染物: {', '.join(other_pollutants[:3])}\n"  # 限制显示前3个
+            
+            # 添加健康建议
+            if general_recommendation:
+                answer += f"• 健康建议: {general_recommendation}\n"
+            
+            # 添加运动建议（针对跑步等户外活动）
+            if aqi_value != "未知" and isinstance(aqi_value, (int, float)):
+                if aqi_value <= 50:
+                    exercise_advice = "空气质量优秀，非常适合户外跑步等运动。"
+                elif aqi_value <= 100:
+                    exercise_advice = "空气质量良好，适合户外运动。"
+                elif aqi_value <= 150:
+                    exercise_advice = "空气质量一般，敏感人群应减少户外运动。"
+                elif aqi_value <= 200:
+                    exercise_advice = "空气质量较差，不建议户外跑步等运动。"
+                else:
+                    exercise_advice = "空气质量很差，避免户外运动。"
+                answer += f"• 运动建议: {exercise_advice}"
+            
+            return answer
+        except Exception as e:
+            return f"{location_hint} 空气质量数据获取成功，但解析失败: {str(e)}"
 
     def _format_finance_answer(self, symbol: str, quote: Dict[str, Any]) -> str:
         """格式化股票/加密货币报价为可读的中文回答。

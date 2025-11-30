@@ -695,10 +695,126 @@ class CombinedSearchClient(SearchClient):
             if len(deduped) >= total_limit:
                 break
 
+        # 如果查询包含时间变化相关关键词，应用时间变化领域的特殊过滤和排序
+        if self._is_temporal_change_query(query):
+            deduped = self._filter_and_rank_temporal_change_results(deduped, query)
+
         return deduped
 
     def get_last_errors(self) -> List[Dict[str, str]]:
         return list(self._last_errors)
+    
+    def _is_temporal_change_query(self, query: str) -> bool:
+        """检测查询是否与时间变化领域相关"""
+        temporal_change_keywords = [
+            # 教育排名相关
+            "大学", "高校", "学院", "学校", "排名", "QS", "THE", "ARWU", "US News",
+            "university", "college", "ranking", "rankings", "education", "higher education",
+            "香港中文大學", "香港科技大學", "香港大學", "CUHK", "HKUST", "HKU",
+            "香港中文大学", "香港科技大学", "香港大学",
+            # 时间变化相关
+            "最近10年", "过去10年", "10年", "十年", "历年", "历史", "变化", "趋势", "发展",
+            "10 years", "decade", "historical", "trend", "development", "evolution",
+            "对比", "比较", "变化趋势", "时间序列", "年度", "逐年",
+            "comparison", "compare", "trend over time", "time series", "yearly", "year by year",
+            # 其他可能的时间变化查询
+            "增长", "下降", "波动", "变化率", "增长率", "涨跌",
+            "growth", "decline", "fluctuation", "rate of change", "growth rate", "rise and fall"
+        ]
+        query_lower = query.lower()
+        return any(keyword in query_lower for keyword in temporal_change_keywords)
+    
+    def _filter_and_rank_temporal_change_results(self, results: List[SearchHit], query: str) -> List[SearchHit]:
+        """针对时间变化领域的搜索结果进行过滤和排序"""
+        if not results:
+            return results
+        
+        # 定义权威教育网站域名
+        authoritative_domains = [
+            "topuniversities.com",  # QS排名官网
+            "timeshighereducation.com",  # THE排名官网
+            "shanghairanking.com",  # ARWU排名官网
+            "usnews.com",  # US News排名官网
+            "cuHK.edu.hk",  # 香港中文大学官网
+            "hkust.edu.hk",  # 香港科技大学官网
+            "hku.hk",  # 香港大学官网
+            "edu.hk",  # 香港教育机构域名
+            "edu.cn",  # 中国教育机构域名
+            "gov.hk",  # 香港政府网站
+            "gov.cn",  # 中国政府网站
+            "wikipedia.org",  # 维基百科
+            "britannica.com"  # 大英百科全书
+        ]
+        
+        # 定义高质量排名相关关键词
+        ranking_keywords = [
+            "qs world university rankings",
+            "the world university rankings",
+            "arwu academic ranking",
+            "world university rankings",
+            "global university rankings",
+            "qs排名",
+            "the排名",
+            "arwu排名",
+            "世界大学排名",
+            "大学排名对比",
+            "university ranking comparison"
+        ]
+        
+        # 计算每个搜索结果的分数
+        scored_results = []
+        for result in results:
+            score = 0
+            title_lower = result.title.lower()
+            snippet_lower = result.snippet.lower()
+            url_lower = result.url.lower()
+            
+            # 1. 权威域名加分
+            for domain in authoritative_domains:
+                if domain in url_lower:
+                    score += 10
+                    break
+            
+            # 2. 排名关键词匹配加分
+            for keyword in ranking_keywords:
+                if keyword in title_lower:
+                    score += 5
+                if keyword in snippet_lower:
+                    score += 3
+            
+            # 3. 查询中的特定大学名称匹配加分
+            query_lower = query.lower()
+            university_names = [
+                "香港中文大學", "香港科技大學", "香港大學", "CUHK", "HKUST", "HKU",
+                "香港中文大学", "香港科技大学", "香港大学"
+            ]
+            for uni in university_names:
+                if uni in query_lower and uni in title_lower:
+                    score += 8
+                if uni in query_lower and uni in snippet_lower:
+                    score += 5
+            
+            # 4. 时间相关性加分（最近的内容优先）
+            recent_keywords = ["2024", "2023", "2025", "最新", "latest", "recent"]
+            for keyword in recent_keywords:
+                if keyword in title_lower or keyword in snippet_lower:
+                    score += 2
+                    break
+            
+            # 5. 数据丰富度加分（包含表格、图表等）
+            data_keywords = ["table", "chart", "graph", "表格", "图表", "数据", "data"]
+            for keyword in data_keywords:
+                if keyword in snippet_lower:
+                    score += 1
+                    break
+            
+            scored_results.append((result, score))
+        
+        # 按分数降序排序
+        scored_results.sort(key=lambda x: x[1], reverse=True)
+        
+        # 返回排序后的结果
+        return [result for result, _ in scored_results]
 
 
 class YouSearchClient(SearchClient):
