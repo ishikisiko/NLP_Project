@@ -1,14 +1,19 @@
 import argparse
 import json
 import os
+import sys
 import re
 from datetime import datetime
 from typing import List, Optional, Dict, Any
 
-from main import build_llm_client, build_search_client, build_reranker, build_domain_classifier_client, build_routing_keywords_client
-from smart_orchestrator import SmartSearchOrchestrator
-from time_parser import parse_time_constraint
-from timing_utils import TimingRecorder
+# Add parent directory to path for imports
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+from core.main import build_search_client, build_reranker
+from langchain.langchain_llm import create_chat_model
+from langchain.langchain_orchestrator import create_langchain_orchestrator, LangChainOrchestrator
+from utils.time_parser import parse_time_constraint
+from utils.timing_utils import TimingRecorder
 
 
 def resolve_model_to_provider(model_or_provider: str, config: Dict[str, Any]) -> str:
@@ -178,15 +183,28 @@ def main() -> None:
     elif args.provider:
         config["LLM_PROVIDER"] = args.provider
 
-    llm_client = build_llm_client(config)
-    classifier_client = build_domain_classifier_client(config)
-    routing_client = build_routing_keywords_client(config)
+    # Create LangChain LLM
+    llm = create_chat_model(config=config)
     allow_search = args.search == "on"
 
+    # Build reranker for LangChain
     reranker = None
     rerank_config: Dict[str, Any] = config.get("rerank") or {}
     if allow_search and not args.disable_rerank:
-        reranker, rerank_config = build_reranker(config)
+        try:
+            from langchain_rerank import create_qwen3_compressor
+            _, rerank_config = build_reranker(config)
+            qwen_cfg = (rerank_config.get("providers") or {}).get("qwen") or rerank_config.get("qwen") or {}
+            if qwen_cfg.get("api_key"):
+                reranker = create_qwen3_compressor(
+                    api_key=qwen_cfg.get("api_key"),
+                    model=qwen_cfg.get("model", "qwen3-rerank"),
+                    base_url=qwen_cfg.get("base_url"),
+                    timeout=qwen_cfg.get("timeout", 15),
+                )
+        except Exception as exc:
+            print(f"[batch_test] LangChain reranker disabled: {exc}")
+            reranker = None
 
     min_rerank_score = float(rerank_config.get("min_score", 0.0))
     max_per_domain = max(1, int(rerank_config.get("max_per_domain", 1)))
@@ -222,10 +240,9 @@ def main() -> None:
             missing_sources = list(getattr(search_client, "missing_requested_sources", []))
             configured_sources = list(getattr(search_client, "configured_sources", []))
 
-    orchestrator = SmartSearchOrchestrator(
-        llm_client=llm_client,
-        classifier_llm_client=classifier_client,
-        routing_llm_client=routing_client,
+    orchestrator = create_langchain_orchestrator(
+        config=config,
+        llm=llm,
         search_client=search_client,
         data_path=args.data_path,
         reranker=reranker,

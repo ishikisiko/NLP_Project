@@ -1,17 +1,21 @@
 from __future__ import annotations
 
 import os
+import sys
 import re
 import time
 from dataclasses import asdict
 from typing import Dict, List, Optional, Tuple
 from urllib.parse import urlparse
 
-from api import HKGAIClient
-from langchain_support import Document, FileReader, LangChainVectorStore
-from rerank import BaseReranker
-from search import SearchClient, SearchHit
-from timing_utils import TimingRecorder
+# Add parent directory to path for imports
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+from llm.api import HKGAIClient
+from langchain.langchain_support import Document, FileReader, LangChainVectorStore
+from search.rerank import BaseReranker
+from search.search import SearchClient, SearchHit
+from utils.timing_utils import TimingRecorder
 
 
 DEFAULT_SYSTEM_PROMPT = (

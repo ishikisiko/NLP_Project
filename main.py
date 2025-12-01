@@ -1,9 +1,14 @@
 import argparse
 import json
+import sys
+import os
 from typing import Optional, Tuple, Dict, Any, List, Union, Set
 
-from api import LLMClient, HKGAIClient
-from search import (
+# Add project directory to path for imports
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+
+from llm.api import LLMClient, HKGAIClient
+from search.search import (
     CombinedSearchClient,
     GoogleSearchClient,
     MCPWebSearchClient,
@@ -11,10 +16,17 @@ from search import (
     SerpAPISearchClient,
     YouSearchClient,
 )
-from rerank import BaseReranker, Qwen3Reranker
-from smart_orchestrator import SmartSearchOrchestrator
+from search.rerank import BaseReranker, Qwen3Reranker
+from orchestrators.smart_orchestrator import SmartSearchOrchestrator
 
-ZAI_DEFAULT_BASE_URL = "https://open.bigmodel.cn/api/paas/v4"
+# Import LangChain components for optional use
+try:
+    from langchain.langchain_llm import create_chat_model, LangChainLLMWrapper
+    from langchain.langchain_orchestrator import create_langchain_orchestrator, LangChainOrchestrator
+    LANGCHAIN_AVAILABLE = True
+except ImportError:
+    LANGCHAIN_AVAILABLE = False
+
 ZAI_ANTHROPIC_DEFAULT_BASE_URL = "https://open.bigmodel.cn/api/anthropic"
 
 
@@ -308,6 +320,11 @@ def parse_args() -> argparse.Namespace:
         default="on",
         help="Enable ('on') or disable ('off') live web search. Uploads remain available in both modes.",
     )
+    parser.add_argument(
+        "--use-legacy",
+        action="store_true",
+        help="Use legacy SmartSearchOrchestrator instead of LangChain-based orchestrator.",
+    )
     return parser.parse_args()
 
 
@@ -583,10 +600,6 @@ def main() -> None:
     elif args.provider:
         config["LLM_PROVIDER"] = args.provider
 
-    llm_client = build_llm_client(config)
-    classifier_client = build_domain_classifier_client(config)
-    routing_client = build_routing_keywords_client(config)
-
     allow_search = args.search == "on"
 
     reranker: Optional[BaseReranker] = None
@@ -631,26 +644,101 @@ def main() -> None:
     configured_sources = getattr(search_client, "configured_sources", configured_sources) if search_client else configured_sources
     
     show_timings = args.pretty
+
+    # Check if legacy orchestrator should be used (LangChain is now the default)
+    use_legacy = getattr(args, 'use_legacy', False)
     
-    orchestrator = SmartSearchOrchestrator(
-        llm_client=llm_client,
-        apisports_api_key=apisports_key_cli,
-        classifier_llm_client=classifier_client,
-        routing_llm_client=routing_client,
-        search_client=search_client,
-        data_path=args.data_path,
-        reranker=reranker,
-        min_rerank_score=min_rerank_score,
-        max_per_domain=max_per_domain,
-        requested_search_sources=requested_sources,
-        active_search_sources=active_sources,
-        active_search_source_labels=active_labels,
-        missing_search_sources=missing_sources,
-        configured_search_sources=configured_sources,
-        show_timings=show_timings,
-        google_api_key=google_key_cli,
-        sportsdb_api_key=sportsdb_key_cli,
-    )
+    if use_legacy:
+        # Use legacy SmartSearchOrchestrator
+        print("[main] Using legacy orchestrator")
+        llm_client = build_llm_client(config)
+        classifier_client = build_domain_classifier_client(config)
+        routing_client = build_routing_keywords_client(config)
+        
+        orchestrator = SmartSearchOrchestrator(
+            llm_client=llm_client,
+            apisports_api_key=apisports_key_cli,
+            classifier_llm_client=classifier_client,
+            routing_llm_client=routing_client,
+            search_client=search_client,
+            data_path=args.data_path,
+            reranker=reranker,
+            min_rerank_score=min_rerank_score,
+            max_per_domain=max_per_domain,
+            requested_search_sources=requested_sources,
+            active_search_sources=active_sources,
+            active_search_source_labels=active_labels,
+            missing_search_sources=missing_sources,
+            configured_search_sources=configured_sources,
+            show_timings=show_timings,
+            google_api_key=google_key_cli,
+            sportsdb_api_key=sportsdb_key_cli,
+        )
+    else:
+        # Use LangChain-based orchestrator (default)
+        if not LANGCHAIN_AVAILABLE:
+            print("[main] LangChain not available, falling back to legacy orchestrator")
+            llm_client = build_llm_client(config)
+            classifier_client = build_domain_classifier_client(config)
+            routing_client = build_routing_keywords_client(config)
+            
+            orchestrator = SmartSearchOrchestrator(
+                llm_client=llm_client,
+                apisports_api_key=apisports_key_cli,
+                classifier_llm_client=classifier_client,
+                routing_llm_client=routing_client,
+                search_client=search_client,
+                data_path=args.data_path,
+                reranker=reranker,
+                min_rerank_score=min_rerank_score,
+                max_per_domain=max_per_domain,
+                requested_search_sources=requested_sources,
+                active_search_sources=active_sources,
+                active_search_source_labels=active_labels,
+                missing_search_sources=missing_sources,
+                configured_search_sources=configured_sources,
+                show_timings=show_timings,
+                google_api_key=google_key_cli,
+                sportsdb_api_key=sportsdb_key_cli,
+            )
+        else:
+            print("[main] Using LangChain orchestrator")
+            from langchain.langchain_llm import create_chat_model
+            from langchain.langchain_orchestrator import create_langchain_orchestrator
+            
+            # Create LangChain LLM
+            llm = create_chat_model(config=config)
+            
+            # Create LangChain reranker if configured
+            langchain_reranker = None
+            if reranker is not None:
+                try:
+                    from langchain.langchain_rerank import create_qwen3_compressor
+                    qwen_cfg = (rerank_config.get("providers") or {}).get("qwen") or rerank_config.get("qwen") or {}
+                    langchain_reranker = create_qwen3_compressor(
+                        api_key=qwen_cfg.get("api_key"),
+                        model=qwen_cfg.get("model", "qwen3-rerank"),
+                        base_url=qwen_cfg.get("base_url"),
+                        timeout=qwen_cfg.get("timeout", 15),
+                    )
+                except Exception as exc:
+                    print(f"[main] Failed to create LangChain reranker: {exc}")
+            
+            orchestrator = create_langchain_orchestrator(
+                config=config,
+                llm=llm,
+                search_client=search_client,
+                data_path=args.data_path,
+                reranker=langchain_reranker,
+                min_rerank_score=min_rerank_score,
+                max_per_domain=max_per_domain,
+                requested_search_sources=requested_sources,
+                active_search_sources=active_sources,
+                active_search_source_labels=active_labels,
+                missing_search_sources=missing_sources,
+                configured_search_sources=configured_sources,
+                show_timings=show_timings,
+            )
     
     result = orchestrator.answer(
         args.query,

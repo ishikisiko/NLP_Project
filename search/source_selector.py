@@ -1,5 +1,6 @@
 import json
 import os
+import sys
 import re
 import time
 from typing import Dict, List, Tuple, Any, Optional
@@ -9,8 +10,11 @@ import requests
 import yfinance as yf
 from yahoo_fin import stock_info
 
-from api import LLMClient
-from timing_utils import TimingRecorder
+# Add parent directory to path for imports
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+from llm.api import LLMClient
+from utils.timing_utils import TimingRecorder
 
 class IntelligentSourceSelector:
     """智能源选择器 - 带具体API配置的版本"""

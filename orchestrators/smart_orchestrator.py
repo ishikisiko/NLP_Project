@@ -2,20 +2,24 @@ from __future__ import annotations
 
 import json
 import os
+import sys
 import time
 import requests
 import base64
 from typing import Any, Dict, List, Optional
 
-from api import LLMClient
-from local_rag import LocalRAG
-from search_rag import SearchRAG
-from rerank import BaseReranker
-from search import SearchClient
-from source_selector import IntelligentSourceSelector
-from time_parser import parse_time_constraint, TimeConstraint
-from timing_utils import TimingRecorder
-from current_time import get_current_date_str
+# Add parent directory to path for imports
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+from llm.api import LLMClient
+from rag.local_rag import LocalRAG
+from rag.search_rag import SearchRAG
+from search.rerank import BaseReranker
+from search.search import SearchClient
+from search.source_selector import IntelligentSourceSelector
+from utils.time_parser import parse_time_constraint, TimeConstraint
+from utils.timing_utils import TimingRecorder
+from utils.current_time import get_current_date_str
 
 
 class SmartSearchOrchestrator:

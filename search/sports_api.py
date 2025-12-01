@@ -1,7 +1,11 @@
 import json
 import requests
 import os
+import sys
 from typing import Dict, Any, Optional, List
+
+# Add parent directory to path for imports
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 
 class SportsAPI:
@@ -23,7 +27,8 @@ class SportsAPI:
 
     def __init__(self, config_path: str = None):
         if config_path is None:
-            config_path = os.path.join(os.path.dirname(__file__), "config.json")
+            # Look for config.json in project root
+            config_path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "config.json")
 
         with open(config_path, "r", encoding="utf-8") as f:
             self.config = json.load(f)

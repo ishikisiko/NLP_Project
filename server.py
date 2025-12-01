@@ -3,17 +3,24 @@ from __future__ import annotations
 import copy
 import json
 import os
+import sys
 from functools import lru_cache
 from typing import Any, Dict, Optional, List
 
 from flask import Flask, jsonify, request
 from werkzeug.utils import secure_filename
 
-from main import build_llm_client, build_search_client, build_reranker, build_domain_classifier_client, build_routing_keywords_client
-from smart_orchestrator import SmartSearchOrchestrator
+# Add project directory to path for imports
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-app = Flask(__name__, static_folder="frontend", static_url_path="")
-UPLOAD_FOLDER = 'uploads'
+from main import build_search_client, build_reranker
+from langchain.langchain_llm import create_chat_model
+from langchain.langchain_orchestrator import create_langchain_orchestrator, LangChainOrchestrator
+
+# Adjust paths for the new structure
+base_dir = os.path.dirname(os.path.abspath(__file__))
+app = Flask(__name__, static_folder=os.path.join(base_dir, "frontend"), static_url_path="")
+UPLOAD_FOLDER = os.path.join(base_dir, 'uploads')
 app.config['UPLOAD_FOLDER'] = UPLOAD_FOLDER
 
 
@@ -72,8 +79,8 @@ def build_pipeline(
     model_override: Optional[str] = None,
     *,
     search_sources: Optional[List[str]] = None,
-) -> SmartSearchOrchestrator:
-    """Create a pipeline configured for the current request."""
+) -> LangChainOrchestrator:
+    """Create a LangChain pipeline configured for the current request."""
 
     # Deep copy to avoid mutating cached configuration between requests
     config = copy.deepcopy(load_base_config())
@@ -152,22 +159,13 @@ def build_pipeline(
                     # Fall back to treating the override as provider name
                     config["LLM_PROVIDER"] = model_override
 
-    # Build LLM client with enhanced error handling
+    # Build LangChain LLM
     try:
-        llm_client = build_llm_client(config)
+        llm = create_chat_model(config=config)
     except Exception as exc:
-        raise ConfigurationError(f"Failed to build LLM client: {exc}")
+        raise ConfigurationError(f"Failed to build LangChain LLM: {exc}")
 
-    try:
-        classifier_client = build_domain_classifier_client(config)
-    except Exception as exc:
-        raise ConfigurationError(f"Failed to build domain classifier client: {exc}")
-
-    try:
-        routing_client = build_routing_keywords_client(config)
-    except Exception as exc:
-        raise ConfigurationError(f"Failed to build routing/keywords client: {exc}")
-
+    # Build search sources metadata
     normalized_sources = _normalize_search_sources(search_sources)
     configured_sources: List[str] = []
     if (config.get("SERPAPI_API_KEY") or "").strip():
@@ -204,25 +202,31 @@ def build_pipeline(
         reference = active_sources if active_sources else configured_sources
         missing_sources = [src for src in normalized_sources if src not in reference]
 
+    # Build reranker for LangChain
     rerank_config = config.get("rerank") or {}
     reranker: Optional[Any] = None
     try:
-        reranker, rerank_config = build_reranker(config)
-    except ValueError as exc:
-        print(f"[server] Reranker disabled: {exc}")
+        from langchain.langchain_rerank import create_qwen3_compressor
+        _, rerank_config = build_reranker(config)
+        qwen_cfg = (rerank_config.get("providers") or {}).get("qwen") or rerank_config.get("qwen") or {}
+        if qwen_cfg.get("api_key"):
+            reranker = create_qwen3_compressor(
+                api_key=qwen_cfg.get("api_key"),
+                model=qwen_cfg.get("model", "qwen3-rerank"),
+                base_url=qwen_cfg.get("base_url"),
+                timeout=qwen_cfg.get("timeout", 15),
+            )
+    except Exception as exc:
+        print(f"[server] LangChain reranker disabled: {exc}")
         reranker = None
-        rerank_config = config.get("rerank") or {}
-    except Exception as exc:  # pragma: no cover - defensive fallback
-        raise ConfigurationError(f"Unexpected reranker error: {exc}")
 
     min_rerank_score = float(rerank_config.get("min_score", 0.0))
     max_per_domain = max(1, int(rerank_config.get("max_per_domain", 1)))
     show_timings = bool(config.get("displayResponseTimes", False))
 
-    return SmartSearchOrchestrator(
-        llm_client=llm_client,
-        classifier_llm_client=classifier_client,
-        routing_llm_client=routing_client,
+    return create_langchain_orchestrator(
+        config=config,
+        llm=llm,
         search_client=search_client,
         data_path=app.config['UPLOAD_FOLDER'],
         reranker=reranker,
@@ -234,7 +238,6 @@ def build_pipeline(
         missing_search_sources=missing_sources,
         configured_search_sources=configured_sources,
         show_timings=show_timings,
-        google_api_key=google_key,
         finnhub_api_key=(config.get("FINNHUB_API_KEY") or os.environ.get("FINNHUB_API_KEY")),
     )
 

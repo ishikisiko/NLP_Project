@@ -1,12 +1,17 @@
 from __future__ import annotations
 
+import os
+import sys
 import time
 from dataclasses import asdict
 from typing import List, Optional, Dict
 
-from api import LLMClient
-from langchain_support import Document, FileReader, LangChainVectorStore
-from timing_utils import TimingRecorder
+# Add parent directory to path for imports
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+from llm.api import LLMClient
+from langchain.langchain_support import Document, FileReader, LangChainVectorStore
+from utils.timing_utils import TimingRecorder
 
 
 class LocalRAG:

@@ -7,7 +7,7 @@ from typing import List, Optional
 
 import requests
 
-from search import SearchHit
+from search.search import SearchHit
 
 
 @dataclass
