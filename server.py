@@ -14,6 +14,7 @@ from werkzeug.utils import secure_filename
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from main import build_search_client, build_reranker
+from utils.temperature_config import get_temperature_for_task
 from langchain.langchain_llm import create_chat_model
 from langchain.langchain_orchestrator import create_langchain_orchestrator, LangChainOrchestrator
 
@@ -95,10 +96,18 @@ def build_pipeline(
         return not any(token in upper_key for token in ("YOUR_", "REPLACE", "TODO"))
 
     def match_provider_by_model(model_id: str) -> Optional[str]:
-        return next(
-            (name for name, cfg in providers_cfg.items() if cfg.get("model") == model_id),
-            None,
-        )
+        # First try to match exact model name
+        for name, cfg in providers_cfg.items():
+            if cfg.get("model") == model_id:
+                return name
+        
+        # Then try to find in available_models
+        for name, cfg in providers_cfg.items():
+            avail = cfg.get("available_models", [])
+            if model_id in avail:
+                return name
+        
+        return None
 
     def resolve_default_provider() -> str:
         configured = config.get("LLM_PROVIDER")
@@ -156,8 +165,8 @@ def build_pipeline(
                     if matched_provider in providers_cfg:
                         providers_cfg[matched_provider]["model"] = model_override
                 else:
-                    # Fall back to treating the override as provider name
-                    config["LLM_PROVIDER"] = model_override
+                    # Model not found in any provider, raise an error instead of treating as provider
+                    raise ConfigurationError(f"Model '{model_override}' not found in any provider configuration")
 
     # Build LangChain LLM
     try:
@@ -312,6 +321,176 @@ def delete_file(filename):
         return jsonify({"error": "File not found"}), 404
 
 
+# ========== MCP Servers Management API ==========
+
+def get_config_path() -> str:
+    """Get the configuration file path."""
+    return os.environ.get("NLP_CONFIG_PATH", "config.json")
+
+
+def save_config(config: Dict[str, Any]) -> None:
+    """Save configuration to file."""
+    config_path = get_config_path()
+    with open(config_path, "w", encoding="utf-8") as f:
+        json.dump(config, f, indent=4, ensure_ascii=False)
+    # Clear the cached config so it reloads on next access
+    load_base_config.cache_clear()
+
+
+@app.route('/api/mcp-servers', methods=['GET'])
+def get_mcp_servers():
+    """Get all configured MCP servers."""
+    try:
+        config = load_base_config()
+        mcp_servers = config.get("mcpServers", {})
+        # Convert to list format for frontend
+        servers_list = []
+        for name, server_config in mcp_servers.items():
+            server_info = {
+                "name": name,
+                "type": server_config.get("type", "unknown"),
+                "enabled": server_config.get("enabled", True),
+                "description": server_config.get("description", ""),
+            }
+            # Add type-specific fields
+            if server_config.get("type") == "streamable-http":
+                server_info["url"] = server_config.get("url", "")
+                server_info["headers"] = server_config.get("headers", {})
+            elif server_config.get("type") == "stdio":
+                server_info["command"] = server_config.get("command", "")
+                server_info["args"] = server_config.get("args", [])
+                server_info["env"] = server_config.get("env", {})
+            servers_list.append(server_info)
+        return jsonify({"servers": servers_list})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route('/api/mcp-servers', methods=['POST'])
+def add_mcp_server():
+    """Add a new MCP server configuration."""
+    try:
+        payload = request.get_json(silent=True) or {}
+        name = (payload.get("name") or "").strip()
+        
+        if not name:
+            return jsonify({"error": "服务器名称不能为空"}), 400
+        
+        # Validate name (alphanumeric and hyphens only)
+        if not all(c.isalnum() or c in '-_' for c in name):
+            return jsonify({"error": "服务器名称只能包含字母、数字、连字符和下划线"}), 400
+        
+        config = copy.deepcopy(load_base_config())
+        mcp_servers = config.setdefault("mcpServers", {})
+        
+        if name in mcp_servers:
+            return jsonify({"error": f"服务器 '{name}' 已存在"}), 400
+        
+        server_type = payload.get("type", "streamable-http")
+        server_config = {
+            "type": server_type,
+            "enabled": payload.get("enabled", True),
+            "description": payload.get("description", ""),
+        }
+        
+        if server_type == "streamable-http":
+            server_config["url"] = payload.get("url", "")
+            server_config["headers"] = payload.get("headers", {})
+        elif server_type == "stdio":
+            server_config["command"] = payload.get("command", "")
+            server_config["args"] = payload.get("args", [])
+            server_config["env"] = payload.get("env", {})
+        
+        mcp_servers[name] = server_config
+        save_config(config)
+        
+        return jsonify({"message": f"MCP服务器 '{name}' 已添加", "server": server_config})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route('/api/mcp-servers/<name>', methods=['PUT'])
+def update_mcp_server(name: str):
+    """Update an existing MCP server configuration."""
+    try:
+        config = copy.deepcopy(load_base_config())
+        mcp_servers = config.get("mcpServers", {})
+        
+        if name not in mcp_servers:
+            return jsonify({"error": f"服务器 '{name}' 不存在"}), 404
+        
+        payload = request.get_json(silent=True) or {}
+        server_config = mcp_servers[name]
+        
+        # Update fields based on type
+        if "enabled" in payload:
+            server_config["enabled"] = payload["enabled"]
+        if "description" in payload:
+            server_config["description"] = payload["description"]
+        
+        server_type = server_config.get("type", "streamable-http")
+        
+        if server_type == "streamable-http":
+            if "url" in payload:
+                server_config["url"] = payload["url"]
+            if "headers" in payload:
+                server_config["headers"] = payload["headers"]
+        elif server_type == "stdio":
+            if "command" in payload:
+                server_config["command"] = payload["command"]
+            if "args" in payload:
+                server_config["args"] = payload["args"]
+            if "env" in payload:
+                server_config["env"] = payload["env"]
+        
+        save_config(config)
+        
+        return jsonify({"message": f"MCP服务器 '{name}' 已更新", "server": server_config})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route('/api/mcp-servers/<name>', methods=['DELETE'])
+def delete_mcp_server(name: str):
+    """Delete an MCP server configuration."""
+    try:
+        config = copy.deepcopy(load_base_config())
+        mcp_servers = config.get("mcpServers", {})
+        
+        if name not in mcp_servers:
+            return jsonify({"error": f"服务器 '{name}' 不存在"}), 404
+        
+        del mcp_servers[name]
+        save_config(config)
+        
+        return jsonify({"message": f"MCP服务器 '{name}' 已删除"})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route('/api/mcp-servers/<name>/toggle', methods=['POST'])
+def toggle_mcp_server(name: str):
+    """Toggle an MCP server's enabled status."""
+    try:
+        config = copy.deepcopy(load_base_config())
+        mcp_servers = config.get("mcpServers", {})
+        
+        if name not in mcp_servers:
+            return jsonify({"error": f"服务器 '{name}' 不存在"}), 404
+        
+        current_enabled = mcp_servers[name].get("enabled", True)
+        mcp_servers[name]["enabled"] = not current_enabled
+        save_config(config)
+        
+        status = "启用" if not current_enabled else "禁用"
+        return jsonify({
+            "message": f"MCP服务器 '{name}' 已{status}",
+            "enabled": not current_enabled
+        })
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
 @app.post("/api/answer")
 def answer() -> Any:
     payload: Dict[str, Any] = request.get_json(silent=True) or {}
@@ -413,6 +592,20 @@ def answer() -> Any:
         per_source_limit = total_limit
     num_retrieved_docs = legacy_num if legacy_num is not None else total_limit
 
+    # Use configured temperature for direct answer as default, but allow request override
+    config = load_base_config()
+    provider = config.get("LLM_PROVIDER", "zai")
+    if "/" in provider:
+        # Extract provider from model path
+        provider = provider.split("/")[0]
+    
+    # Get temperature from request or use configured default
+    request_temp = payload.get("temperature")
+    if request_temp is not None:
+        temperature = float(request_temp)
+    else:
+        temperature = get_temperature_for_task(config, "direct_answer", provider, 0.3)
+    
     try:
         print(f"[server] Processing query: {query[:50]}...")
         result = pipeline.answer(
@@ -421,7 +614,7 @@ def answer() -> Any:
             per_source_search_results=per_source_limit,
             num_retrieved_docs=num_retrieved_docs,
             max_tokens=int(payload.get("max_tokens")) if payload.get("max_tokens") else 5000,
-            temperature=float(payload.get("temperature")) if payload.get("temperature") else 0.3,
+            temperature=temperature,
             allow_search=allow_search,
             reference_limit=reference_limit,
             force_search=force_search,

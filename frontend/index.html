@@ -14,6 +14,13 @@
         <header class="hero">
             <h1>有什么可以帮助您</h1>
             <p>How can we help you today?</p>
+            <button type="button" id="mcp-settings-btn" class="mcp-settings-btn" title="MCP Servers 管理">
+                <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                    <circle cx="12" cy="12" r="3"></circle>
+                    <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"></path>
+                </svg>
+                MCP Servers
+            </button>
         </header>
 
         <main class="chat-shell">
@@ -118,6 +125,10 @@
                                         <input type="checkbox" id="timing-show-llm" value="llm" checked>
                                         <span>LLM调用详情</span>
                                     </label>
+                                    <label class="timing-option" for="timing-show-tools">
+                                        <input type="checkbox" id="timing-show-tools" value="tools" checked>
+                                        <span>工具调用详情</span>
+                                    </label>
                                 </div>
                             </div>
                         </div>
@@ -190,5 +201,90 @@
     <script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/components/prism-bash.min.js"></script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/components/prism-json.min.js"></script>
     <script src="script.js" defer></script>
+
+    <!-- MCP Servers 管理弹窗 -->
+    <div id="mcp-modal" class="modal-overlay hidden">
+        <div class="modal-container mcp-modal">
+            <div class="modal-header">
+                <h2>MCP Servers 管理</h2>
+                <button type="button" id="mcp-modal-close" class="modal-close">&times;</button>
+            </div>
+            <div class="modal-body">
+                <div class="mcp-server-list" id="mcp-server-list">
+                    <!-- Server cards will be dynamically inserted here -->
+                </div>
+                <button type="button" id="mcp-add-btn" class="mcp-add-btn">
+                    <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                        <line x1="12" y1="5" x2="12" y2="19"></line>
+                        <line x1="5" y1="12" x2="19" y2="12"></line>
+                    </svg>
+                    添加 MCP Server
+                </button>
+            </div>
+        </div>
+    </div>
+
+    <!-- 添加/编辑 MCP Server 弹窗 -->
+    <div id="mcp-edit-modal" class="modal-overlay hidden">
+        <div class="modal-container mcp-edit-modal">
+            <div class="modal-header">
+                <h2 id="mcp-edit-title">添加 MCP Server</h2>
+                <button type="button" id="mcp-edit-modal-close" class="modal-close">&times;</button>
+            </div>
+            <div class="modal-body">
+                <form id="mcp-edit-form">
+                    <input type="hidden" id="mcp-edit-original-name" />
+                    <div class="form-field">
+                        <label for="mcp-edit-name">服务器名称</label>
+                        <input type="text" id="mcp-edit-name" placeholder="例如: my-mcp-server" required />
+                    </div>
+                    <div class="form-field">
+                        <label for="mcp-edit-type">类型</label>
+                        <select id="mcp-edit-type">
+                            <option value="streamable-http">HTTP (streamable-http)</option>
+                            <option value="stdio">STDIO (本地进程)</option>
+                        </select>
+                    </div>
+                    <div class="form-field">
+                        <label for="mcp-edit-description">描述</label>
+                        <input type="text" id="mcp-edit-description" placeholder="服务器描述（可选）" />
+                    </div>
+                    
+                    <!-- HTTP 类型的配置 -->
+                    <div id="mcp-http-config" class="mcp-type-config">
+                        <div class="form-field">
+                            <label for="mcp-edit-url">URL</label>
+                            <input type="url" id="mcp-edit-url" placeholder="https://example.com/mcp" />
+                        </div>
+                        <div class="form-field">
+                            <label for="mcp-edit-headers">Headers (JSON 格式)</label>
+                            <textarea id="mcp-edit-headers" rows="3" placeholder='{"Authorization": "Bearer xxx"}'></textarea>
+                        </div>
+                    </div>
+                    
+                    <!-- STDIO 类型的配置 -->
+                    <div id="mcp-stdio-config" class="mcp-type-config hidden">
+                        <div class="form-field">
+                            <label for="mcp-edit-command">命令</label>
+                            <input type="text" id="mcp-edit-command" placeholder="例如: npx" />
+                        </div>
+                        <div class="form-field">
+                            <label for="mcp-edit-args">参数 (JSON 数组)</label>
+                            <textarea id="mcp-edit-args" rows="2" placeholder='["-y", "@z_ai/mcp-server"]'></textarea>
+                        </div>
+                        <div class="form-field">
+                            <label for="mcp-edit-env">环境变量 (JSON 格式)</label>
+                            <textarea id="mcp-edit-env" rows="3" placeholder='{"API_KEY": "xxx"}'></textarea>
+                        </div>
+                    </div>
+                    
+                    <div class="form-actions">
+                        <button type="button" id="mcp-edit-cancel" class="btn-secondary">取消</button>
+                        <button type="submit" class="btn-primary">保存</button>
+                    </div>
+                </form>
+            </div>
+        </div>
+    </div>
 </body>
 </html>

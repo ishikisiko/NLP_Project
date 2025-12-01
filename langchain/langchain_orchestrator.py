@@ -10,6 +10,7 @@ import json
 import os
 import sys
 import time
+import requests
 from dataclasses import asdict
 from enum import Enum
 from typing import Any, Dict, List, Optional, Tuple, Union
@@ -609,7 +610,41 @@ Always answer in the same language as the user's question."""
         timing_recorder: Optional[TimingRecorder],
     ) -> Dict[str, Any]:
         """Handle queries with images."""
-        system_prompt = "你是一个智能视觉助手。用户上传了一张图片。请结合图片内容回答用户的问题。请始终使用与用户提问相同的语言回答。"
+        # Check if LLM supports vision
+        vision_keywords = ["grok", "gpt-4", "claude", "gemini", "glm-4v", "glm-4.5v", "claude-4.5-haiku", "vision", "minimax"]
+        is_vision_model = any(k in self.llm.model_name.lower() if hasattr(self.llm, 'model_name') else '' for k in vision_keywords)
+        
+        # Try to get visual metadata from Google Vision API if available
+        visual_context = ""
+        if self.google_api_key:
+            try:
+                visual_info = self._perform_visual_retrieval(images, timing_recorder)
+                if visual_info:
+                    labels = [label.get("label") for label in visual_info.get("bestGuessLabels", [])]
+                    entities = [entity.get("description") for entity in visual_info.get("webEntities", []) if entity.get("description")]
+                    
+                    visual_context = (
+                        "我通过搜索引擎找到了关于这张图片的以下线索（元数据）：\n\n"
+                        f"最佳猜测标签：[{', '.join(labels)}]\n\n"
+                        f"关联实体：[{', '.join(entities)}]\n\n"
+                        "请结合图片内容和上述线索回答用户的问题。如果线索不足，请诚实告知。请始终使用与用户提问相同的语言回答。"
+                    )
+            except Exception as e:
+                print(f"Visual retrieval failed: {e}")
+        
+        if is_vision_model:
+            system_prompt = "你是一个智能视觉助手。用户上传了一张图片。"
+            if visual_context:
+                system_prompt += "\n\n" + visual_context
+            else:
+                system_prompt += "\n请结合图片内容回答用户的问题。请始终使用与用户提问相同的语言回答。"
+        else:
+            system_prompt = "你是一个智能助手。用户上传了图片，但你无法查看图片内容。"
+            if visual_context:
+                system_prompt += "\n\n" + visual_context
+                system_prompt += "\n\n虽然你无法直接查看图片，但可以根据上述元数据信息尝试回答用户的问题。请始终使用与用户提问相同的语言回答。"
+            else:
+                system_prompt += "\n请明确告知用户你无法查看图片，并询问他们是否可以描述图片内容或提供其他相关信息。请始终使用与用户提问相同的语言回答。"
         
         direct = self._direct_answer(
             query, timing_recorder, images=images, system_prompt=system_prompt
@@ -629,6 +664,56 @@ Always answer in the same language as the user's question."""
                 "search_allowed": allow_search,
             },
         }
+
+    def _perform_visual_retrieval(self, images: List[Dict[str, str]], timing_recorder: Optional[TimingRecorder]) -> Optional[Dict[str, Any]]:
+        if not self.google_api_key or not images:
+            return None
+        
+        start = time.perf_counter()
+        try:
+            # Use the first image for visual retrieval
+            img = images[0]
+            b64_content = img.get("base64", "")
+            if "," in b64_content:
+                b64_content = b64_content.split(",")[1]
+            
+            url = f"https://vision.googleapis.com/v1/images:annotate?key={self.google_api_key}"
+            payload = {
+                "requests": [
+                    {
+                        "image": {
+                            "content": b64_content
+                        },
+                        "features": [
+                            {
+                                "type": "WEB_DETECTION"
+                            }
+                        ]
+                    }
+                ]
+            }
+            
+            response = requests.post(url, json=payload, timeout=10)
+            response.raise_for_status()
+            result = response.json()
+            
+            responses = result.get("responses", [])
+            if responses:
+                web_detection = responses[0].get("webDetection", {})
+                return web_detection
+            return None
+            
+        except Exception as e:
+            print(f"Google Cloud Vision API error: {e}")
+            return None
+        finally:
+            if timing_recorder:
+                duration_ms = (time.perf_counter() - start) * 1000
+                timing_recorder.record_tool_call(
+                    tool="google_vision",
+                    duration_ms=duration_ms,
+                    success=True # Simplified
+                )
 
     def _handle_small_talk(
         self,

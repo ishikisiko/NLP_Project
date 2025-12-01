@@ -66,7 +66,7 @@ document.addEventListener("DOMContentLoaded", () => {
     const state = {
         loading: false,
         searchSources: new Set(),
-        timingOptions: new Set(['total', 'search', 'llm']), // 默认全部显示
+        timingOptions: new Set(['total', 'search', 'llm', 'tools']), // 默认全部显示
         forceSearch: false,
         images: [],
     };
@@ -649,6 +649,7 @@ document.addEventListener("DOMContentLoaded", () => {
         const safeTimings = (timings && typeof timings === "object") ? timings : {};
         const searchSources = Array.isArray(safeTimings.search_sources) ? safeTimings.search_sources : [];
         const llmCalls = Array.isArray(safeTimings.llm_calls) ? safeTimings.llm_calls : [];
+        const toolCalls = Array.isArray(safeTimings.tool_calls) ? safeTimings.tool_calls : [];
         const hasTotal = typeof safeTimings.total_ms === "number";
         
         // Check for keywords
@@ -773,6 +774,32 @@ document.addEventListener("DOMContentLoaded", () => {
             contentWrapper.appendChild(totalRow);
         }
 
+        // 添加 Google Vision API 调用标识
+        const googleVisionCalled = toolCalls.some(call => call.tool === 'google_vision');
+        if (googleVisionCalled && state.timingOptions.has('tools')) {
+            const visionBadge = document.createElement("div");
+            visionBadge.className = "vision-badge";
+            visionBadge.style.marginBottom = "12px";
+            visionBadge.style.padding = "6px 12px";
+            visionBadge.style.backgroundColor = "#4285f4";
+            visionBadge.style.color = "white";
+            visionBadge.style.borderRadius = "4px";
+            visionBadge.style.fontSize = "0.85rem";
+            visionBadge.style.fontWeight = "500";
+            visionBadge.style.display = "inline-block";
+            
+            const visionIcon = document.createElement("span");
+            visionIcon.textContent = "👁️ ";
+            visionIcon.style.marginRight = "6px";
+            
+            const visionText = document.createElement("span");
+            visionText.textContent = "Google Vision API 已调用";
+            
+            visionBadge.appendChild(visionIcon);
+            visionBadge.appendChild(visionText);
+            contentWrapper.appendChild(visionBadge);
+        }
+
         // 创建一个容器用于水平排列搜索源和LLM调用
         const sectionsContainer = document.createElement("div");
         sectionsContainer.className = "timing-sections-container";
@@ -826,11 +853,15 @@ document.addEventListener("DOMContentLoaded", () => {
         });
         const llmSection = renderSection("LLM 调用", normalizedLLM, 'llm');
 
-        // 将搜索源和LLM调用添加到水平容器中
-        if (searchSection || llmSection) {
+        // 渲染工具调用部分（包括Google Vision API）
+        const toolSection = renderSection("工具调用", toolCalls, 'tools');
+
+        // 将搜索源、LLM调用和工具调用添加到水平容器中
+        if (searchSection || llmSection || toolSection) {
             contentWrapper.appendChild(sectionsContainer);
             if (searchSection) sectionsContainer.appendChild(searchSection);
             if (llmSection) sectionsContainer.appendChild(llmSection);
+            if (toolSection) sectionsContainer.appendChild(toolSection);
         }
 
         return createCollapsibleSection(
@@ -1487,4 +1518,311 @@ document.addEventListener("DOMContentLoaded", () => {
     updateTimingVisibility();
     normalizeSearchLimits();
     setForceSearchState(false);
+
+    // ========== MCP Servers Management ==========
+    const mcpSettingsBtn = document.getElementById("mcp-settings-btn");
+    const mcpModal = document.getElementById("mcp-modal");
+    const mcpModalClose = document.getElementById("mcp-modal-close");
+    const mcpServerList = document.getElementById("mcp-server-list");
+    const mcpAddBtn = document.getElementById("mcp-add-btn");
+    
+    const mcpEditModal = document.getElementById("mcp-edit-modal");
+    const mcpEditModalClose = document.getElementById("mcp-edit-modal-close");
+    const mcpEditForm = document.getElementById("mcp-edit-form");
+    const mcpEditTitle = document.getElementById("mcp-edit-title");
+    const mcpEditOriginalName = document.getElementById("mcp-edit-original-name");
+    const mcpEditName = document.getElementById("mcp-edit-name");
+    const mcpEditType = document.getElementById("mcp-edit-type");
+    const mcpEditDescription = document.getElementById("mcp-edit-description");
+    const mcpEditUrl = document.getElementById("mcp-edit-url");
+    const mcpEditHeaders = document.getElementById("mcp-edit-headers");
+    const mcpEditCommand = document.getElementById("mcp-edit-command");
+    const mcpEditArgs = document.getElementById("mcp-edit-args");
+    const mcpEditEnv = document.getElementById("mcp-edit-env");
+    const mcpEditCancel = document.getElementById("mcp-edit-cancel");
+    const mcpHttpConfig = document.getElementById("mcp-http-config");
+    const mcpStdioConfig = document.getElementById("mcp-stdio-config");
+
+    function openMcpModal() {
+        mcpModal.classList.remove("hidden");
+        loadMcpServers();
+    }
+
+    function closeMcpModal() {
+        mcpModal.classList.add("hidden");
+    }
+
+    function openMcpEditModal(server = null) {
+        mcpEditModal.classList.remove("hidden");
+        
+        if (server) {
+            mcpEditTitle.textContent = "编辑 MCP Server";
+            mcpEditOriginalName.value = server.name;
+            mcpEditName.value = server.name;
+            mcpEditName.disabled = true; // 编辑时不允许修改名称
+            mcpEditType.value = server.type || "streamable-http";
+            mcpEditType.disabled = true; // 编辑时不允许修改类型
+            mcpEditDescription.value = server.description || "";
+            
+            if (server.type === "streamable-http") {
+                mcpEditUrl.value = server.url || "";
+                mcpEditHeaders.value = server.headers ? JSON.stringify(server.headers, null, 2) : "";
+            } else if (server.type === "stdio") {
+                mcpEditCommand.value = server.command || "";
+                mcpEditArgs.value = server.args ? JSON.stringify(server.args, null, 2) : "[]";
+                mcpEditEnv.value = server.env ? JSON.stringify(server.env, null, 2) : "{}";
+            }
+        } else {
+            mcpEditTitle.textContent = "添加 MCP Server";
+            mcpEditOriginalName.value = "";
+            mcpEditName.value = "";
+            mcpEditName.disabled = false;
+            mcpEditType.value = "streamable-http";
+            mcpEditType.disabled = false;
+            mcpEditDescription.value = "";
+            mcpEditUrl.value = "";
+            mcpEditHeaders.value = "";
+            mcpEditCommand.value = "";
+            mcpEditArgs.value = "[]";
+            mcpEditEnv.value = "{}";
+        }
+        
+        updateMcpTypeConfig();
+    }
+
+    function closeMcpEditModal() {
+        mcpEditModal.classList.add("hidden");
+        mcpEditForm.reset();
+    }
+
+    function updateMcpTypeConfig() {
+        const type = mcpEditType.value;
+        if (type === "streamable-http") {
+            mcpHttpConfig.classList.remove("hidden");
+            mcpStdioConfig.classList.add("hidden");
+        } else {
+            mcpHttpConfig.classList.add("hidden");
+            mcpStdioConfig.classList.remove("hidden");
+        }
+    }
+
+    async function loadMcpServers() {
+        try {
+            const response = await fetch("/api/mcp-servers");
+            if (!response.ok) throw new Error("Failed to fetch MCP servers");
+            
+            const data = await response.json();
+            const servers = Array.isArray(data.servers) ? data.servers : [];
+            
+            renderMcpServers(servers);
+        } catch (error) {
+            console.error("Failed to load MCP servers:", error);
+            mcpServerList.innerHTML = '<div class="mcp-error">加载 MCP 服务器失败</div>';
+        }
+    }
+
+    function renderMcpServers(servers) {
+        if (servers.length === 0) {
+            mcpServerList.innerHTML = '<div class="mcp-empty">暂无配置的 MCP 服务器</div>';
+            return;
+        }
+        
+        mcpServerList.innerHTML = servers.map(server => `
+            <div class="mcp-server-card ${server.enabled === false ? 'disabled' : ''}" data-name="${server.name}">
+                <div class="mcp-server-header">
+                    <div class="mcp-server-info">
+                        <span class="mcp-server-name">${escapeHTML(server.name)}</span>
+                        <span class="mcp-server-type">${server.type}</span>
+                        ${server.enabled === false ? '<span class="mcp-server-status">已禁用</span>' : ''}
+                    </div>
+                    <div class="mcp-server-actions">
+                        <button type="button" class="mcp-btn-toggle" data-name="${server.name}" title="${server.enabled === false ? '启用' : '禁用'}">
+                            ${server.enabled === false ? '启用' : '禁用'}
+                        </button>
+                        <button type="button" class="mcp-btn-edit" data-name="${server.name}" title="编辑">
+                            <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                                <path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"></path>
+                                <path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"></path>
+                            </svg>
+                        </button>
+                        <button type="button" class="mcp-btn-delete" data-name="${server.name}" title="删除">
+                            <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                                <polyline points="3 6 5 6 21 6"></polyline>
+                                <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path>
+                            </svg>
+                        </button>
+                    </div>
+                </div>
+                ${server.description ? `<div class="mcp-server-desc">${escapeHTML(server.description)}</div>` : ''}
+                <div class="mcp-server-details">
+                    ${server.type === 'streamable-http' ? `<span class="mcp-detail">URL: ${escapeHTML(server.url || '未设置')}</span>` : ''}
+                    ${server.type === 'stdio' ? `<span class="mcp-detail">命令: ${escapeHTML(server.command || '未设置')}</span>` : ''}
+                </div>
+            </div>
+        `).join('');
+        
+        // Bind event handlers
+        mcpServerList.querySelectorAll('.mcp-btn-toggle').forEach(btn => {
+            btn.addEventListener('click', () => toggleMcpServer(btn.dataset.name));
+        });
+        
+        mcpServerList.querySelectorAll('.mcp-btn-edit').forEach(btn => {
+            btn.addEventListener('click', () => {
+                const server = servers.find(s => s.name === btn.dataset.name);
+                if (server) openMcpEditModal(server);
+            });
+        });
+        
+        mcpServerList.querySelectorAll('.mcp-btn-delete').forEach(btn => {
+            btn.addEventListener('click', () => deleteMcpServer(btn.dataset.name));
+        });
+    }
+
+    async function toggleMcpServer(name) {
+        try {
+            const response = await fetch(`/api/mcp-servers/${encodeURIComponent(name)}/toggle`, {
+                method: 'POST'
+            });
+            
+            if (!response.ok) {
+                const data = await response.json();
+                throw new Error(data.error || '操作失败');
+            }
+            
+            await loadMcpServers();
+        } catch (error) {
+            console.error("Toggle MCP server failed:", error);
+            alert(`操作失败: ${error.message}`);
+        }
+    }
+
+    async function deleteMcpServer(name) {
+        if (!confirm(`确定要删除 MCP 服务器 "${name}" 吗？`)) return;
+        
+        try {
+            const response = await fetch(`/api/mcp-servers/${encodeURIComponent(name)}`, {
+                method: 'DELETE'
+            });
+            
+            if (!response.ok) {
+                const data = await response.json();
+                throw new Error(data.error || '删除失败');
+            }
+            
+            await loadMcpServers();
+        } catch (error) {
+            console.error("Delete MCP server failed:", error);
+            alert(`删除失败: ${error.message}`);
+        }
+    }
+
+    async function saveMcpServer(event) {
+        event.preventDefault();
+        
+        const originalName = mcpEditOriginalName.value;
+        const isEdit = !!originalName;
+        
+        const name = mcpEditName.value.trim();
+        const type = mcpEditType.value;
+        const description = mcpEditDescription.value.trim();
+        
+        const payload = {
+            name,
+            type,
+            description,
+            enabled: true
+        };
+        
+        try {
+            if (type === "streamable-http") {
+                payload.url = mcpEditUrl.value.trim();
+                const headersStr = mcpEditHeaders.value.trim();
+                if (headersStr) {
+                    payload.headers = JSON.parse(headersStr);
+                }
+            } else if (type === "stdio") {
+                payload.command = mcpEditCommand.value.trim();
+                const argsStr = mcpEditArgs.value.trim();
+                if (argsStr) {
+                    payload.args = JSON.parse(argsStr);
+                }
+                const envStr = mcpEditEnv.value.trim();
+                if (envStr) {
+                    payload.env = JSON.parse(envStr);
+                }
+            }
+        } catch (e) {
+            alert("JSON 格式错误: " + e.message);
+            return;
+        }
+        
+        try {
+            let response;
+            if (isEdit) {
+                response = await fetch(`/api/mcp-servers/${encodeURIComponent(originalName)}`, {
+                    method: 'PUT',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(payload)
+                });
+            } else {
+                response = await fetch('/api/mcp-servers', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(payload)
+                });
+            }
+            
+            if (!response.ok) {
+                const data = await response.json();
+                throw new Error(data.error || '保存失败');
+            }
+            
+            closeMcpEditModal();
+            await loadMcpServers();
+        } catch (error) {
+            console.error("Save MCP server failed:", error);
+            alert(`保存失败: ${error.message}`);
+        }
+    }
+
+    // MCP Modal Event Listeners
+    if (mcpSettingsBtn) {
+        mcpSettingsBtn.addEventListener("click", openMcpModal);
+    }
+    
+    if (mcpModalClose) {
+        mcpModalClose.addEventListener("click", closeMcpModal);
+    }
+    
+    if (mcpModal) {
+        mcpModal.addEventListener("click", (e) => {
+            if (e.target === mcpModal) closeMcpModal();
+        });
+    }
+    
+    if (mcpAddBtn) {
+        mcpAddBtn.addEventListener("click", () => openMcpEditModal());
+    }
+    
+    if (mcpEditModalClose) {
+        mcpEditModalClose.addEventListener("click", closeMcpEditModal);
+    }
+    
+    if (mcpEditCancel) {
+        mcpEditCancel.addEventListener("click", closeMcpEditModal);
+    }
+    
+    if (mcpEditModal) {
+        mcpEditModal.addEventListener("click", (e) => {
+            if (e.target === mcpEditModal) closeMcpEditModal();
+        });
+    }
+    
+    if (mcpEditType) {
+        mcpEditType.addEventListener("change", updateMcpTypeConfig);
+    }
+    
+    if (mcpEditForm) {
+        mcpEditForm.addEventListener("submit", saveMcpServer);
+    }
 });

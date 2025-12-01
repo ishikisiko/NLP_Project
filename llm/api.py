@@ -22,17 +22,24 @@ class LLMClient:
         max_retries: int = 3,
         backoff_factor: float = 1.0,
         thinking_enabled: bool = False,
-        display_thinking: bool = False
+        display_thinking: bool = False,
+        model_base_urls: Optional[Dict[str, str]] = None
     ) -> None:
         self.api_key = api_key
         self.model_id = model_id
-        self.base_url = base_url.rstrip("/")
-        self.request_timeout = request_timeout
         self.provider = provider
         self.max_retries = max_retries
         self.backoff_factor = backoff_factor
         self.thinking_enabled = thinking_enabled
         self.display_thinking = display_thinking
+        self.model_base_urls = model_base_urls or {}
+        
+        # Use model-specific base URL if available for this model
+        if model_id in self.model_base_urls:
+            self.base_url = self.model_base_urls[model_id].rstrip("/")
+        else:
+            self.base_url = base_url.rstrip("/")
+        self.request_timeout = request_timeout
         # Detect Anthropic-compatible endpoint (Minimax & other IB provider endpoints)
         self.anthropic_compatible = False
         try:
@@ -113,7 +120,7 @@ class LLMClient:
         
         # Handle images for supported vision models
         # We enable this for known vision-capable models or if explicitly requested
-        vision_keywords = ["grok", "gpt-4", "claude-3", "gemini", "glm-4v", "vision", "minimax"]
+        vision_keywords = ["grok", "gpt-4", "claude", "gemini", "glm-4v", "glm-4.5v", "claude-4.5-haiku", "vision", "minimax"]
         is_vision_model = any(k in self.model_id.lower() for k in vision_keywords)
         
         if images and is_vision_model:
@@ -133,8 +140,8 @@ class LLMClient:
                  })
              messages.append({"role": "user", "content": content_list})
         else:
-             if images:
-                 print(f"[LLMClient] Warning: Images provided but model '{self.model_id}' may not support vision or is not in the allowlist. Sending text only.")
+             # For non-vision models, always send the original user prompt
+             # The system prompt should contain information about images and any vision metadata
              messages.append({"role": "user", "content": user_prompt})
 
         payload = {
@@ -167,7 +174,37 @@ class LLMClient:
                 if isinstance(text_content, str):
                     content_blocks = [{"type": "text", "text": text_content}]
                 elif isinstance(text_content, list):
-                    content_blocks = text_content
+                    # Convert OpenAI-style image_url to Anthropic-style image format
+                    content_blocks = []
+                    for item in text_content:
+                        if isinstance(item, dict):
+                            if item.get("type") == "text":
+                                content_blocks.append(item)
+                            elif item.get("type") == "image_url":
+                                # Convert from OpenAI format to Anthropic format
+                                image_url = item.get("image_url", {})
+                                url = image_url.get("url", "")
+                                if url.startswith("data:"):
+                                    # Extract media type and base64 data
+                                    parts = url.split(";base64,")
+                                    if len(parts) == 2:
+                                        media_type = parts[0].replace("data:", "")
+                                        base64_data = parts[1]
+                                        content_blocks.append({
+                                            "type": "image",
+                                            "source": {
+                                                "type": "base64",
+                                                "media_type": media_type,
+                                                "data": base64_data
+                                            }
+                                        })
+                                else:
+                                    # Fallback for non-base64 URLs (shouldn't happen but handle gracefully)
+                                    content_blocks.append(item)
+                            else:
+                                content_blocks.append(item)
+                        else:
+                            content_blocks.append({"type": "text", "text": str(item)})
                 else:
                     content_blocks = [{"type": "text", "text": str(text_content)}]
                 

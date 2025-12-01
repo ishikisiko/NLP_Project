@@ -12,6 +12,7 @@ from typing import Any, Dict, List, Optional
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from llm.api import LLMClient
+from utils.temperature_config import get_temperature_for_task
 from rag.local_rag import LocalRAG
 from rag.search_rag import SearchRAG
 from search.rerank import BaseReranker
@@ -63,6 +64,7 @@ class SmartSearchOrchestrator:
         finnhub_api_key: Optional[str] = None,
         sportsdb_api_key: Optional[str] = None,
         apisports_api_key: Optional[str] = None,
+        config: Optional[Dict[str, Any]] = None,
     ) -> None:
         self.llm_client = llm_client
         self.classifier_llm_client = classifier_llm_client
@@ -77,6 +79,10 @@ class SmartSearchOrchestrator:
         self._local_signature: Optional[tuple] = None
         self._search_rag_signature: Optional[tuple] = None
         self.google_api_key = google_api_key
+        self.config = config or {}
+        
+        # Get provider name for temperature settings
+        self.provider = getattr(llm_client, 'provider', 'zai')
         selector_client = classifier_llm_client or self.llm_client
         self.source_selector = IntelligentSourceSelector(
             llm_client=selector_client,
@@ -85,6 +91,7 @@ class SmartSearchOrchestrator:
             finnhub_api_key=finnhub_api_key,
             sportsdb_api_key=sportsdb_api_key,
             apisports_api_key=apisports_api_key,
+            config=self.config,
         )
         self.requested_search_sources = self._normalize_sources(requested_search_sources)
         raw_active_sources = active_search_sources or getattr(search_client, "active_sources", [])
@@ -169,11 +176,24 @@ class SmartSearchOrchestrator:
                 except Exception as e:
                     print(f"Visual retrieval failed: {e}")
             
-            system_prompt = "你是一个智能视觉助手。用户上传了一张图片。"
-            if visual_context:
-                system_prompt += "\n\n" + visual_context
+            # Check if the LLM supports vision
+            vision_keywords = ["grok", "gpt-4", "claude", "gemini", "glm-4v", "glm-4.5v", "claude-4.5-haiku", "vision", "minimax"]
+            is_vision_model = any(k in self.llm_client.model_id.lower() for k in vision_keywords)
+            
+            if is_vision_model:
+                system_prompt = "你是一个智能视觉助手。用户上传了一张图片。"
+                if visual_context:
+                    system_prompt += "\n\n" + visual_context
+                else:
+                    system_prompt += "\n请结合图片内容回答用户的问题。注意：未能获取图片的外部元数据（如Google Vision结果），请完全依赖你的视觉能力进行识别。请始终使用与用户提问相同的语言回答。"
             else:
-                system_prompt += "\n请结合图片内容回答用户的问题。注意：未能获取图片的外部元数据（如Google Vision结果），请完全依赖你的视觉能力进行识别。请始终使用与用户提问相同的语言回答。"
+                # Non-vision model prompt
+                system_prompt = "你是一个智能助手。用户上传了图片，但你无法查看图片内容。"
+                if visual_context:
+                    system_prompt += "\n\n" + visual_context
+                    system_prompt += "\n\n虽然你无法直接查看图片，但可以根据上述元数据信息尝试回答用户的问题。请始终使用与用户提问相同的语言回答。"
+                else:
+                    system_prompt += "\n请明确告知用户你无法查看图片，并询问他们是否可以描述图片内容或提供其他相关信息。请始终使用与用户提问相同的语言回答。"
 
             return self._finalize_with_timings(
                 self._direct_answer_via_llm(
@@ -716,6 +736,9 @@ class SmartSearchOrchestrator:
         images: Optional[List[Dict[str, str]]] = None,
         system_prompt_override: Optional[str] = None,
     ) -> Dict[str, Any]:
+        # Use task-specific temperature if configured
+        task_temp = get_temperature_for_task(self.config, "direct_answer", self.provider, temperature)
+        
         fallback = self._chat_with_timing(
             self.llm_client,
             label="direct_answer",
@@ -723,7 +746,7 @@ class SmartSearchOrchestrator:
             system_prompt=system_prompt_override or self.DIRECT_ANSWER_SYSTEM_PROMPT,
             user_prompt=query,
             max_tokens=max_tokens,
-            temperature=temperature,
+            temperature=task_temp,
             extra={"stage": reason},
             images=images,
         )
@@ -1282,6 +1305,9 @@ class SmartSearchOrchestrator:
             "}"
         )
         
+        # Use task-specific temperature for classification
+        task_temp = get_temperature_for_task(self.config, "classification", self.provider, 0.1)
+        
         response = self._chat_with_timing(
             self.llm_client,
             label="time_detection",
@@ -1289,7 +1315,7 @@ class SmartSearchOrchestrator:
             system_prompt=system_prompt,
             user_prompt=f"Query: {query}",
             max_tokens=100,
-            temperature=0.1,
+            temperature=task_temp,
         )
         
         try:

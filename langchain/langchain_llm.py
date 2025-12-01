@@ -153,7 +153,37 @@ class UniversalChatModel(BaseChatModel):
             if isinstance(content, str):
                 content_blocks = [{"type": "text", "text": content}]
             elif isinstance(content, list):
-                content_blocks = content
+                # Convert OpenAI-style image_url to Anthropic-style image format
+                content_blocks = []
+                for item in content:
+                    if isinstance(item, dict):
+                        if item.get("type") == "text":
+                            content_blocks.append(item)
+                        elif item.get("type") == "image_url":
+                            # Convert from OpenAI format to Anthropic format
+                            image_url = item.get("image_url", {})
+                            url = image_url.get("url", "")
+                            if url.startswith("data:"):
+                                # Extract media type and base64 data
+                                parts = url.split(";base64,")
+                                if len(parts) == 2:
+                                    media_type = parts[0].replace("data:", "")
+                                    base64_data = parts[1]
+                                    content_blocks.append({
+                                        "type": "image",
+                                        "source": {
+                                            "type": "base64",
+                                            "media_type": media_type,
+                                            "data": base64_data
+                                        }
+                                    })
+                            else:
+                                # Fallback for non-base64 URLs
+                                content_blocks.append(item)
+                        else:
+                            content_blocks.append(item)
+                    else:
+                        content_blocks.append({"type": "text", "text": str(item)})
             else:
                 content_blocks = [{"type": "text", "text": str(content)}]
             
@@ -459,6 +489,13 @@ class LangChainLLMWrapper:
         self.provider = chat_model.provider
         self.model_id = chat_model.model_name
     
+    def _is_vision_model(self) -> bool:
+        """Check if current model supports vision."""
+        vision_keywords = ["grok", "gpt-4", "claude", "gemini", "glm-4v", "glm-4.5v", "claude-4.5-haiku", "vision", "minimax"]
+        is_vision = any(k in self.model_id.lower() for k in vision_keywords)
+        print(f"[LangChainLLMWrapper] Checking if model '{self.model_id}' supports vision: {is_vision}")
+        return is_vision
+    
     def chat(
         self,
         system_prompt: str,
@@ -481,7 +518,7 @@ class LangChainLLMWrapper:
                     messages.append(AIMessage(content=content))
         
         # Handle images
-        if images:
+        if images and self._is_vision_model():
             content_list = [{"type": "text", "text": user_prompt}]
             for img in images:
                 b64 = img.get("base64", "")
@@ -498,6 +535,10 @@ class LangChainLLMWrapper:
                 })
             messages.append(HumanMessage(content=content_list))
         else:
+            if images:
+                print(f"[LangChainLLMWrapper] Warning: Images provided but model '{self.model_id}' may not support vision. Sending text only.")
+                # Add a note to the user prompt about the image
+                user_prompt = f"[注意：您上传了图片，但所选模型 '{self.model_id}' 不支持视觉功能。请描述图片内容以便我更好地回答。]\n\n{user_prompt}"
             messages.append(HumanMessage(content=user_prompt))
         
         try:

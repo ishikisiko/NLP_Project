@@ -32,7 +32,11 @@ class IntelligentSourceSelector:
         finnhub_api_key: Optional[str] = None,
         sportsdb_api_key: Optional[str] = None,
         apisports_api_key: Optional[str] = None,  # 添加缺失参数
+        config: Optional[Dict[str, Any]] = None,  # 添加配置参数
     ):
+        # Store configuration
+        self.config = config or {}
+        
         # 领域关键词映射
         self.domain_keywords = {
             "weather": [
@@ -248,11 +252,18 @@ class IntelligentSourceSelector:
         )
         try:
             response_start = time.perf_counter()
+            # Use classification temperature from config if available
+            from utils.temperature_config import get_temperature_for_task
+            # Create a basic config dict if not available
+            config = getattr(self, 'config', {})
+            provider = getattr(self.llm_client, 'provider', 'zai')
+            task_temp = get_temperature_for_task(config, "classification", provider, 0.0)
+            
             response = self.llm_client.chat(
                 system_prompt="You classify intents into fixed domains.",
                 user_prompt=prompt,
                 max_tokens=200,
-                temperature=0.0,
+                temperature=task_temp,
             )
         except Exception:
             return None

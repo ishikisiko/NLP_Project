@@ -18,6 +18,7 @@ from search.search import (
 )
 from search.rerank import BaseReranker, Qwen3Reranker
 from orchestrators.smart_orchestrator import SmartSearchOrchestrator
+from utils.temperature_config import get_temperature_for_task
 
 # Import LangChain components for optional use
 try:
@@ -447,7 +448,8 @@ def build_llm_client(
         max_retries=provider_max_retries,
         backoff_factor=provider_backoff_factor,
         thinking_enabled=thinking_enabled,
-        display_thinking=display_thinking
+        display_thinking=display_thinking,
+        model_base_urls=provider_config.get("model_base_urls")
     )
 
 
@@ -673,6 +675,7 @@ def main() -> None:
             show_timings=show_timings,
             google_api_key=google_key_cli,
             sportsdb_api_key=sportsdb_key_cli,
+            config=config,
         )
     else:
         # Use LangChain-based orchestrator (default)
@@ -700,6 +703,7 @@ def main() -> None:
                 show_timings=show_timings,
                 google_api_key=google_key_cli,
                 sportsdb_api_key=sportsdb_key_cli,
+                config=config,
             )
         else:
             print("[main] Using LangChain orchestrator")
@@ -740,12 +744,23 @@ def main() -> None:
                 show_timings=show_timings,
             )
     
+    # Use configured temperature for direct answer as default, but allow CLI override
+    provider = config.get("LLM_PROVIDER", "zai")
+    if "/" in provider:
+        # Extract provider from model path
+        provider = provider.split("/")[0]
+    
+    configured_temp = get_temperature_for_task(config, "direct_answer", provider, args.temperature)
+    
+    # If user explicitly set temperature via CLI, use that value
+    effective_temperature = args.temperature if args.temperature != 0.3 else configured_temp
+    
     result = orchestrator.answer(
         args.query,
         num_search_results=args.num_results,
         num_retrieved_docs=args.num_results,
         max_tokens=args.max_tokens,
-        temperature=args.temperature,
+        temperature=effective_temperature,
         allow_search=allow_search,
     )
 

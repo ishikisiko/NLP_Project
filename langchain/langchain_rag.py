@@ -391,17 +391,27 @@ class SearchRAGChain:
         
         # Handle images for multimodal
         if images:
-            content_list = [{"type": "text", "text": user_prompt}]
-            for img in images:
-                b64 = img.get("base64", "")
-                if "," in b64:
-                    b64 = b64.split(",")[1]
-                mime = img.get("mime_type", "image/jpeg")
-                content_list.append({
-                    "type": "image_url",
-                    "image_url": {"url": f"data:{mime};base64,{b64}"}
-                })
-            messages.append(HumanMessage(content=content_list))
+            # Check if LLM supports vision
+            vision_keywords = ["grok", "gpt-4", "claude", "gemini", "glm-4v", "glm-4.5v", "claude-4.5-haiku", "vision", "minimax"]
+            model_name = getattr(self.llm, 'model_name', '')
+            is_vision_model = any(k in model_name.lower() for k in vision_keywords)
+            
+            if is_vision_model:
+                content_list = [{"type": "text", "text": user_prompt}]
+                for img in images:
+                    b64 = img.get("base64", "")
+                    if "," in b64:
+                        b64 = b64.split(",")[1]
+                    mime = img.get("mime_type", "image/jpeg")
+                    content_list.append({
+                        "type": "image_url",
+                        "image_url": {"url": f"data:{mime};base64,{b64}"}
+                    })
+                messages.append(HumanMessage(content=content_list))
+            else:
+                # For non-vision models, just send the original user prompt
+                # The system prompt should contain information about images and any vision metadata
+                messages.append(HumanMessage(content=user_prompt))
         else:
             messages.append(HumanMessage(content=user_prompt))
         

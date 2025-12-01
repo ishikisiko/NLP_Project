@@ -1,5 +1,6 @@
 # Configuration files with sensitive data
 config.json
+.playwright-mcp/
 .iflow/*
 .claude/
 uploads/*

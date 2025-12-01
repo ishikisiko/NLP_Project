@@ -1034,6 +1034,369 @@ body {
     }
 }
 
+/* ========== MCP Settings Button ========== */
+.mcp-settings-btn {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    margin-top: 16px;
+    padding: 10px 18px;
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    background: var(--card);
+    color: var(--text);
+    font-size: 0.9rem;
+    cursor: pointer;
+    transition: background 0.2s ease, border-color 0.2s ease, box-shadow 0.2s ease;
+}
+
+.mcp-settings-btn:hover {
+    background: var(--accent-soft);
+    border-color: var(--accent);
+    box-shadow: 0 4px 12px rgba(45, 139, 139, 0.15);
+}
+
+.mcp-settings-btn svg {
+    color: var(--accent);
+}
+
+/* ========== Modal Styles ========== */
+.modal-overlay {
+    position: fixed;
+    inset: 0;
+    background: rgba(0, 0, 0, 0.5);
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    z-index: 1000;
+    padding: 20px;
+}
+
+.modal-overlay.hidden {
+    display: none;
+}
+
+.modal-container {
+    background: var(--card);
+    border-radius: 20px;
+    box-shadow: 0 20px 60px rgba(0, 0, 0, 0.2);
+    max-width: 600px;
+    width: 100%;
+    max-height: 80vh;
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+}
+
+.mcp-modal {
+    max-width: 700px;
+}
+
+.mcp-edit-modal {
+    max-width: 500px;
+}
+
+.modal-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 20px 24px;
+    border-bottom: 1px solid var(--border);
+}
+
+.modal-header h2 {
+    margin: 0;
+    font-size: 1.25rem;
+    font-weight: 600;
+}
+
+.modal-close {
+    border: none;
+    background: transparent;
+    font-size: 1.5rem;
+    color: var(--muted);
+    cursor: pointer;
+    padding: 4px 8px;
+    border-radius: 8px;
+    transition: background 0.2s ease, color 0.2s ease;
+}
+
+.modal-close:hover {
+    background: var(--accent-soft);
+    color: var(--text);
+}
+
+.modal-body {
+    padding: 24px;
+    overflow-y: auto;
+    flex: 1;
+}
+
+/* ========== MCP Server List ========== */
+.mcp-server-list {
+    display: flex;
+    flex-direction: column;
+    gap: 16px;
+    margin-bottom: 20px;
+}
+
+.mcp-empty,
+.mcp-error {
+    text-align: center;
+    padding: 40px 20px;
+    color: var(--muted);
+    font-size: 0.95rem;
+}
+
+.mcp-error {
+    color: var(--error);
+}
+
+.mcp-server-card {
+    border: 1px solid var(--border);
+    border-radius: 14px;
+    padding: 16px;
+    background: #f8fffe;
+    transition: border-color 0.2s ease, box-shadow 0.2s ease;
+}
+
+.mcp-server-card:hover {
+    border-color: var(--accent);
+    box-shadow: 0 4px 12px rgba(45, 139, 139, 0.1);
+}
+
+.mcp-server-card.disabled {
+    opacity: 0.6;
+    background: #f5f5f5;
+}
+
+.mcp-server-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: flex-start;
+    gap: 12px;
+}
+
+.mcp-server-info {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 8px;
+}
+
+.mcp-server-name {
+    font-weight: 600;
+    font-size: 1rem;
+    color: var(--text);
+}
+
+.mcp-server-type {
+    padding: 2px 8px;
+    border-radius: 6px;
+    background: var(--accent-soft);
+    color: var(--accent);
+    font-size: 0.75rem;
+    font-weight: 500;
+}
+
+.mcp-server-status {
+    padding: 2px 8px;
+    border-radius: 6px;
+    background: rgba(217, 119, 6, 0.1);
+    color: var(--warning);
+    font-size: 0.75rem;
+    font-weight: 500;
+}
+
+.mcp-server-actions {
+    display: flex;
+    gap: 8px;
+}
+
+.mcp-server-actions button {
+    border: none;
+    background: transparent;
+    padding: 6px 10px;
+    border-radius: 8px;
+    cursor: pointer;
+    transition: background 0.2s ease;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+}
+
+.mcp-btn-toggle {
+    font-size: 0.8rem;
+    color: var(--muted);
+}
+
+.mcp-btn-toggle:hover {
+    background: var(--accent-soft);
+    color: var(--accent);
+}
+
+.mcp-btn-edit {
+    color: var(--muted);
+}
+
+.mcp-btn-edit:hover {
+    background: var(--accent-soft);
+    color: var(--accent);
+}
+
+.mcp-btn-delete {
+    color: var(--muted);
+}
+
+.mcp-btn-delete:hover {
+    background: rgba(220, 38, 38, 0.1);
+    color: var(--error);
+}
+
+.mcp-server-desc {
+    margin-top: 8px;
+    font-size: 0.9rem;
+    color: var(--muted);
+}
+
+.mcp-server-details {
+    margin-top: 10px;
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+}
+
+.mcp-detail {
+    font-size: 0.8rem;
+    color: var(--muted);
+    background: var(--bg);
+    padding: 4px 10px;
+    border-radius: 6px;
+    max-width: 100%;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.mcp-add-btn {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 8px;
+    width: 100%;
+    padding: 14px;
+    border: 2px dashed var(--border);
+    border-radius: 12px;
+    background: transparent;
+    color: var(--muted);
+    font-size: 0.95rem;
+    cursor: pointer;
+    transition: border-color 0.2s ease, color 0.2s ease, background 0.2s ease;
+}
+
+.mcp-add-btn:hover {
+    border-color: var(--accent);
+    color: var(--accent);
+    background: var(--accent-soft);
+}
+
+/* ========== MCP Edit Form ========== */
+.form-field {
+    margin-bottom: 16px;
+}
+
+.form-field label {
+    display: block;
+    margin-bottom: 6px;
+    font-size: 0.9rem;
+    font-weight: 500;
+    color: var(--text);
+}
+
+.form-field input[type="text"],
+.form-field input[type="url"],
+.form-field select,
+.form-field textarea {
+    width: 100%;
+    padding: 10px 14px;
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    background: #f8fffe;
+    color: var(--text);
+    font-size: 0.95rem;
+    transition: border-color 0.2s ease, box-shadow 0.2s ease;
+}
+
+.form-field input:focus,
+.form-field select:focus,
+.form-field textarea:focus {
+    outline: none;
+    border-color: var(--accent);
+    box-shadow: 0 0 0 3px rgba(45, 139, 139, 0.15);
+}
+
+.form-field input:disabled {
+    background: #e8e8e8;
+    color: var(--muted);
+    cursor: not-allowed;
+}
+
+.form-field textarea {
+    font-family: monospace;
+    resize: vertical;
+    min-height: 60px;
+}
+
+.mcp-type-config {
+    padding: 16px;
+    background: var(--bg);
+    border-radius: 12px;
+    margin-bottom: 16px;
+}
+
+.mcp-type-config.hidden {
+    display: none;
+}
+
+.form-actions {
+    display: flex;
+    justify-content: flex-end;
+    gap: 12px;
+    margin-top: 24px;
+    padding-top: 16px;
+    border-top: 1px solid var(--border);
+}
+
+.btn-primary,
+.btn-secondary {
+    padding: 10px 20px;
+    border-radius: 10px;
+    font-size: 0.95rem;
+    font-weight: 500;
+    cursor: pointer;
+    transition: background 0.2s ease, box-shadow 0.2s ease;
+}
+
+.btn-primary {
+    border: none;
+    background: var(--accent);
+    color: white;
+}
+
+.btn-primary:hover {
+    box-shadow: 0 4px 12px rgba(45, 139, 139, 0.3);
+}
+
+.btn-secondary {
+    border: 1px solid var(--border);
+    background: transparent;
+    color: var(--text);
+}
+
+.btn-secondary:hover {
+    background: var(--bg);
+}
+
 @media (max-width: 720px) {
     body {
         padding: 0 1rem 1.5rem;
