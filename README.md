@@ -2,6 +2,11 @@
 
 This project demonstrates a simple Retrieval-Augmented Generation (RAG) pipeline.
 
+## LangChain integration
+
+- Local and hybrid RAG now run on LangChain primitives (FAISS + HuggingFace embeddings) for chunking and retrieval.
+- Install the refreshed dependencies (`langchain`, `langchain-community`, `faiss-cpu`) via `pip install -r requirements.txt`.
+
 ## Installation
 
 1.  Clone the repository:
