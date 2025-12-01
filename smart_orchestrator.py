@@ -8,9 +8,8 @@ import base64
 from typing import Any, Dict, List, Optional
 
 from api import LLMClient
-from hybrid_rag import HybridRAG
 from local_rag import LocalRAG
-from no_rag_baseline import NoRAGBaseline
+from search_rag import SearchRAG
 from rerank import BaseReranker
 from search import SearchClient
 from source_selector import IntelligentSourceSelector
@@ -70,10 +69,9 @@ class SmartSearchOrchestrator:
         self.min_rerank_score = min_rerank_score
         self.max_per_domain = max(1, max_per_domain)
         self._local_pipeline: Optional[LocalRAG] = None
-        self._hybrid_pipeline: Optional[HybridRAG] = None
-        self._search_pipeline: Optional[NoRAGBaseline] = None
+        self._search_rag_pipeline: Optional[SearchRAG] = None
         self._local_signature: Optional[tuple] = None
-        self._hybrid_signature: Optional[tuple] = None
+        self._search_rag_signature: Optional[tuple] = None
         self.google_api_key = google_api_key
         selector_client = classifier_llm_client or self.llm_client
         self.source_selector = IntelligentSourceSelector(
@@ -357,14 +355,13 @@ class SmartSearchOrchestrator:
             "timing_recorder": timing_recorder,
             "images": images,
         }
-        if isinstance(pipeline, HybridRAG):
+        if isinstance(pipeline, SearchRAG):
             pipeline_kwargs.update(
                 {
                     "num_retrieved_docs": num_retrieved_docs,
                     "enable_search": True,
                 }
             )
-        if isinstance(pipeline, (HybridRAG, NoRAGBaseline)):
             pipeline_kwargs["per_source_limit"] = per_source_limit
             # 添加时间限制参数
             if time_constraint.you_freshness:
@@ -378,13 +375,14 @@ class SmartSearchOrchestrator:
         control_payload = {
             "search_performed": True,
             "decision": decision_meta,
+            "search_mode": "search",
             "keywords": keywords,
             "keyword_generation": {
                 "raw_text": keyword_info.get("raw_text"),
                 "llm_warning": keyword_info.get("llm_warning"),
                 "llm_error": keyword_info.get("llm_error"),
             },
-            "hybrid_mode": isinstance(pipeline, HybridRAG),
+            "hybrid_mode": isinstance(pipeline, SearchRAG),
             "local_docs_present": has_docs,
             "search_allowed": True,
             "domain": domain,
@@ -851,16 +849,12 @@ class SmartSearchOrchestrator:
         allow_search: bool,
         has_docs: bool,
         snapshot: Optional[tuple],
-    ) -> Optional[NoRAGBaseline | HybridRAG | LocalRAG]:
+    ) -> Optional[SearchRAG | LocalRAG]:
         if not allow_search:
             return self._ensure_local_pipeline(snapshot)
 
-        if has_docs:
-            pipeline = self._ensure_hybrid_pipeline(snapshot)
-            if pipeline is not None:
-                return pipeline
-
-        return self._ensure_search_pipeline()
+        # Use SearchRAG for all search cases, with optional local documents
+        return self._ensure_search_rag_pipeline(snapshot)
 
     def _ensure_local_pipeline(self, snapshot: Optional[tuple]) -> Optional[LocalRAG]:
         if not self.data_path or snapshot is None:
@@ -880,35 +874,24 @@ class SmartSearchOrchestrator:
                 self._local_signature = None
         return self._local_pipeline
 
-    def _ensure_hybrid_pipeline(self, snapshot: Optional[tuple]) -> Optional[HybridRAG]:
-        if not self.data_path or snapshot is None or not self.search_client:
-            return None
-
-        if self._hybrid_pipeline is None or self._hybrid_signature != snapshot:
-            self._hybrid_pipeline = HybridRAG(
-                llm_client=self.llm_client,
-                search_client=self.search_client,
-                data_path=self.data_path,
-                reranker=self.reranker,
-                min_rerank_score=self.min_rerank_score,
-                max_per_domain=self.max_per_domain,
-            )
-            self._hybrid_signature = snapshot
-        return self._hybrid_pipeline
-
-    def _ensure_search_pipeline(self) -> Optional[NoRAGBaseline]:
+    def _ensure_search_rag_pipeline(self, snapshot: Optional[tuple]) -> Optional[SearchRAG]:
         if not self.search_client:
             return None
 
-        if self._search_pipeline is None:
-            self._search_pipeline = NoRAGBaseline(
+        # Create a signature that includes both search client and local docs
+        search_signature = (id(self.search_client), snapshot)
+        
+        if self._search_rag_pipeline is None or self._search_rag_signature != search_signature:
+            self._search_rag_pipeline = SearchRAG(
                 llm_client=self.llm_client,
                 search_client=self.search_client,
+                data_path=self.data_path,  # Can be None for search-only mode
                 reranker=self.reranker,
                 min_rerank_score=self.min_rerank_score,
                 max_per_domain=self.max_per_domain,
             )
-        return self._search_pipeline
+            self._search_rag_signature = search_signature
+        return self._search_rag_pipeline
 
     def _snapshot_local_docs(self) -> Optional[tuple]:
         if not self.data_path or not os.path.isdir(self.data_path):

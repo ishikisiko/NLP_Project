@@ -2,18 +2,20 @@
     color-scheme: light;
     font-family: "Inter", "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
     line-height: 1.6;
-    --bg: #f5f5f7;
-    --text: #1f2933;
-    --muted: #6b7280;
+
+    /* Ocean Depths Theme */
+    --bg: #f1faee;
+    --text: #1a2332;
+    --muted: #2d8b8b;
     --card: #ffffff;
-    --border: #e2e8f0;
-    --shadow: 0 18px 40px rgba(15, 23, 42, 0.08);
-    --accent: #2563eb;
-    --accent-soft: rgba(37, 99, 235, 0.12);
-    --user-bubble: linear-gradient(135deg, #2563eb, #4338ca);
+    --border: #a8dadc;
+    --shadow: 0 18px 40px rgba(26, 35, 50, 0.08);
+    --accent: #2d8b8b;
+    --accent-soft: rgba(45, 139, 139, 0.12);
+    --user-bubble: linear-gradient(135deg, #2d8b8b, #1a2332);
     --assistant-bubble: #ffffff;
-    --chip-bg: #eef2ff;
-    --chip-text: #312e81;
+    --chip-bg: #a8dadc;
+    --chip-text: #1a2332;
     --error: #dc2626;
     --warning: #d97706;
 }
@@ -92,7 +94,7 @@ body {
     gap: 10px;
     padding: 12px 14px;
     border-radius: 16px;
-    background: #f8fafc;
+    background: #f1faee;
     border: 1px solid transparent;
     transition: background 0.2s ease, border-color 0.2s ease;
 }
@@ -137,7 +139,7 @@ body {
     border: 1px solid var(--border);
     border-radius: 14px;
     padding: 14px 16px;
-    background: #f5f7fb;
+    background: #f1faee;
     display: grid;
     gap: 12px;
     max-height: 260px;
@@ -371,7 +373,7 @@ body {
 
 .skeleton-line {
     height: 12px;
-    background: #e2e8f0;
+    background: #a8dadc;
     border-radius: 6px;
     position: relative;
     overflow: hidden;
@@ -429,7 +431,7 @@ body {
     border: 1px solid var(--border);
     border-radius: 12px;
     padding: 16px;
-    background: #f8fafc;
+    background: #f1faee;
 }
 
 .collapsible-header {
@@ -468,7 +470,7 @@ body {
     border: 1px solid var(--border);
     border-radius: 12px;
     padding: 14px 16px;
-    background: #f8fbff;
+    background: #a8dadc;
 }
 
 .timing-total {
@@ -551,7 +553,7 @@ body {
 .doc-list li {
     padding: 10px 12px;
     border-radius: 12px;
-    background: #f8fafc;
+    background: #f1faee;
     border: 1px solid var(--border);
 }
 
@@ -611,7 +613,7 @@ body {
     border-radius: 16px;
     border: 1px solid var(--border);
     resize: none;
-    background: #f8fafc;
+    background: #f1faee;
     color: var(--text);
     transition: border-color 0.2s ease, box-shadow 0.2s ease;
 }
@@ -630,7 +632,7 @@ body {
     font-size: 1rem;
     border-radius: 16px;
     border: 1px solid var(--border);
-    background: #f8fafc;
+    background: #f1faee;
     color: var(--text);
     transition: border-color 0.2s ease, box-shadow 0.2s ease;
     font-family: "Inter", "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
@@ -667,7 +669,7 @@ body {
     border-radius: 12px;
     border: 1px solid var(--border);
     padding: 10px 14px;
-    background: #f8fafc;
+    background: #f1faee;
     font-size: 0.95rem;
     color: var(--text);
 }
@@ -676,13 +678,13 @@ body {
     border-radius: 12px;
     border: 1px solid var(--border);
     padding: 10px 14px;
-    background: #f8fafc;
+    background: #f1faee;
     font-size: 0.95rem;
     color: var(--text);
 }
 
 .control-field input[type="number"]:disabled {
-    background: #e5e7eb;
+    background: #a8dadc;
     color: var(--muted);
 }
 
@@ -702,7 +704,7 @@ body {
 .toggle-slider {
     position: absolute;
     inset: 0;
-    background: #cbd5f5;
+    background: #a8dadc;
     border-radius: 999px;
     transition: background 0.2s ease;
     pointer-events: none;
@@ -788,7 +790,7 @@ body {
 .search-source-button {
     border-radius: 12px;
     border: 1px solid var(--border);
-    background: #f8fafc;
+    background: #f1faee;
     color: var(--text);
     padding: 8px 12px;
     font-size: 0.9rem;
@@ -807,7 +809,7 @@ body {
 }
 
 .search-source-button[aria-expanded="true"] {
-    background: #eef2ff;
+    background: rgba(168, 218, 220, 0.3);
     border-color: rgba(37, 99, 235, 0.35);
 }
 
@@ -856,7 +858,7 @@ body {
 .timing-button {
     border-radius: 12px;
     border: 1px solid var(--border);
-    background: #f8fafc;
+    background: #f1faee;
     color: var(--text);
     padding: 8px 12px;
     font-size: 0.9rem;
@@ -875,7 +877,7 @@ body {
 }
 
 .timing-button[aria-expanded="true"] {
-    background: #eef2ff;
+    background: rgba(168, 218, 220, 0.3);
     border-color: rgba(37, 99, 235, 0.35);
 }
 
@@ -916,7 +918,7 @@ body {
 .upload-field button {
     border-radius: 12px;
     border: 1px solid var(--border);
-    background: #f8fafc;
+    background: #f1faee;
     color: var(--text);
     padding: 10px 16px;
     font-size: 0.95rem;
@@ -925,7 +927,7 @@ body {
 }
 
 .upload-field button:hover {
-    background: #eef2ff;
+    background: rgba(168, 218, 220, 0.3);
 }
 
 .file-chip-list {
@@ -961,7 +963,7 @@ body {
 }
 
 .chip.empty {
-    background: #f3f4f6;
+    background: #f1faee;
     color: var(--muted);
     border-style: dashed;
 }

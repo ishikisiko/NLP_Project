@@ -1,9 +1,14 @@
 from __future__ import annotations
 
+import os
+import re
 import time
-from dataclasses import asdict
+from dataclasses import asdict, dataclass
 from typing import Dict, List, Optional, Tuple
 from urllib.parse import urlparse
+
+import PyPDF2
+from sentence_transformers import SentenceTransformer
 
 from api import HKGAIClient
 from search import SearchClient, SearchHit
@@ -13,22 +18,120 @@ from timing_utils import TimingRecorder
 
 DEFAULT_SYSTEM_PROMPT = (
     "You are an information assistant. "
-    "Answer user questions concisely using ONLY the provided search results. "
+    "Answer user questions concisely using ONLY the provided search results and local documents. "
     "CRITICAL: Do NOT fabricate, invent, or guess any specific data (such as scores, numbers, statistics, dates, or names) "
-    "that is not EXPLICITLY stated in the search results. "
-    "If specific information is not found in the search results, clearly state '未在搜索结果中找到具体数据' or 'specific data not found in search results'. "
+    "that is not EXPLICITLY stated in the search results or local documents. "
+    "If specific information is not found in the search results or local documents, clearly state '未在搜索结果和本地文档中找到具体数据' or 'specific data not found in search results and local documents'. "
     "When unsure, acknowledge the uncertainty instead of guessing. "
     "Always answer in the same language as the user's question."
 )
 
 
-class NoRAGBaseline:
-    """Minimal pipeline that sends search snippets to the LLM without local retrieval."""
+@dataclass
+class Document:
+    """Represents a single text document with optional metadata."""
+
+    content: str
+    source: Optional[str] = None
+
+
+class FileReader:
+    """Loads documents from a directory, supporting .txt, .md, and .pdf files."""
+
+    def __init__(self, path: str, recursive: bool = True) -> None:
+        if not os.path.isdir(path):
+            raise ValueError(f"Path '{path}' is not a valid directory.")
+        self.path = path
+        self.recursive = recursive
+
+    def load(self) -> List[Document]:
+        """Load all supported documents from the configured path."""
+        documents = []
+        for root, _, files in os.walk(self.path):
+            if not self.recursive and root != self.path:
+                continue
+            for file in files:
+                file_path = os.path.join(root, file)
+                if file_path.endswith(".pdf"):
+                    documents.extend(self._load_pdf(file_path))
+                elif file_path.endswith((".txt", ".md")):
+                    documents.append(self._load_text(file_path))
+        return documents
+
+    def _load_pdf(self, file_path: str) -> List[Document]:
+        """Load a single PDF and return a Document per page."""
+        try:
+            with open(file_path, "rb") as f:
+                reader = PyPDF2.PdfReader(f)
+                return [
+                    Document(
+                        content=page.extract_text(),
+                        source=f"{file_path} (page {i + 1})",
+                    )
+                    for i, page in enumerate(reader.pages)
+                ]
+        except Exception as e:
+            print(f"Skipping corrupted or invalid PDF '{file_path}': {e}")
+            return []
+
+    def _load_text(self, file_path: str) -> Document:
+        """Load a single text-based document."""
+        with open(file_path, "r", encoding="utf-8") as f:
+            return Document(content=f.read(), source=file_path)
+
+
+class TextSplitter:
+    """Splits a list of documents into smaller, overlapping chunks."""
+
+    def __init__(self, chunk_size: int = 1000, chunk_overlap: int = 200) -> None:
+        self.chunk_size = chunk_size
+        self.chunk_overlap = chunk_overlap
+
+    def split(self, documents: List[Document]) -> List[Document]:
+        """Split documents into chunks."""
+        chunks = []
+        for doc in documents:
+            content = doc.content
+            for i in range(0, len(content), self.chunk_size - self.chunk_overlap):
+                chunk_content = content[i : i + self.chunk_size]
+                chunks.append(Document(content=chunk_content, source=doc.source))
+        return chunks
+
+
+class VectorStore:
+    """An in-memory vector store using SentenceTransformers for embeddings."""
+
+    def __init__(self, model_name: str = "all-MiniLM-L6-v2") -> None:
+        self.model = SentenceTransformer(model_name)
+        self.vectors = {}
+        self.documents = []
+
+    def add_documents(self, documents: List[Document]) -> None:
+        """Add documents and create their embeddings."""
+        self.documents.extend(documents)
+        embeddings = self.model.encode([doc.content for doc in documents])
+        for i, doc in enumerate(documents):
+            self.vectors[len(self.vectors)] = embeddings[i]
+
+    def search(self, query: str, k: int = 5) -> List[Document]:
+        """Search for the top k most similar documents to a query."""
+        query_embedding = self.model.encode([query])
+        scores = {}
+        for i, vector in self.vectors.items():
+            scores[i] = self.model.similarity(query_embedding, vector).item()
+
+        sorted_indices = sorted(scores, key=scores.get, reverse=True)
+        return [self.documents[i] for i in sorted_indices[:k]]
+
+
+class SearchRAG:
+    """A unified RAG pipeline that combines web search with optional local document retrieval."""
 
     def __init__(
         self,
         llm_client: HKGAIClient,
         search_client: SearchClient,
+        data_path: Optional[str] = None,
         system_prompt: str = DEFAULT_SYSTEM_PROMPT,
         *,
         reranker: Optional[BaseReranker] = None,
@@ -41,6 +144,22 @@ class NoRAGBaseline:
         self.reranker = reranker
         self.min_rerank_score = min_rerank_score
         self.max_per_domain = max(1, max_per_domain)
+        
+        # Initialize local document retrieval if data_path is provided
+        self.vector_store = None
+        if data_path:
+            print("Loading and indexing local documents...")
+            try:
+                reader = FileReader(data_path)
+                documents = reader.load()
+                splitter = TextSplitter()
+                chunks = splitter.split(documents)
+                self.vector_store = VectorStore()
+                self.vector_store.add_documents(chunks)
+                print(f"Indexed {len(chunks)} chunks from local documents.")
+            except Exception as e:
+                print(f"Failed to load local documents: {e}")
+                self.vector_store = None
 
     def _format_search_hits(self, hits: List[SearchHit]) -> str:
         if not hits:
@@ -55,6 +174,22 @@ class NoRAGBaseline:
                 f"{idx}. {title}\n"
                 f"   URL: {url}\n"
                 f"   Snippet: {snippet}"
+            )
+        return "\n".join(formatted_rows)
+    
+    def _format_local_docs(self, docs: List[Document]) -> str:
+        if not docs:
+            return "No local documents were retrieved."
+
+        formatted_rows = []
+        for idx, doc in enumerate(docs, start=1):
+            source = doc.source or f"Document {idx}"
+            content = doc.content[:500]  # Limit content length
+            if len(doc.content) > 500:
+                content += "..."
+            formatted_rows.append(
+                f"{idx}. {source}\n"
+                f"   Content: {content}"
             )
         return "\n".join(formatted_rows)
     
@@ -97,7 +232,6 @@ class NoRAGBaseline:
         combined_snippets = " ".join(hit.snippet.lower() for hit in hits if hit.snippet)
         
         # 检查是否包含年份+排名的模式
-        import re
         year_rank_pattern = r'\b(20\d{2})\b.*?(?:rank|排名|position|#\d+|top\s*\d+)'
         has_year_rank_data = bool(re.search(year_rank_pattern, combined_snippets))
         
@@ -192,10 +326,6 @@ class NoRAGBaseline:
             print(f"📊 宽泛搜索分析：找到 {len(unique_years)} 个不同年份的数据，包含排名信息: {has_rank_data}")
             
             # 对于时间变化查询，总是执行颗粒化搜索以获取更完整的数据
-            # 注释掉早期返回，确保总是执行颗粒化搜索
-            # if len(unique_years) >= 3 and has_rank_data:
-            #     print("✅ 宽泛搜索已找到足够的时间变化数据，无需进一步颗粒化搜索")
-            #     return broad_hits[:num_search_results * 2]
             print(f"📊 宽泛搜索分析：找到 {len(unique_years)} 个不同年份的数据，包含排名信息: {has_rank_data}")
             print("🔄 继续执行颗粒化搜索以获取更完整的历史数据...")
         
@@ -384,485 +514,107 @@ class NoRAGBaseline:
         else:
             return broad_hits
 
-    def build_prompt(self, query: str, hits: List[SearchHit], ranking_info: str = "") -> str:
-        context_block = self._format_search_hits(hits)
+    def build_prompt(self, query: str, hits: List[SearchHit], local_docs: List[Document] = None, ranking_info: str = "") -> str:
+        search_context = self._format_search_hits(hits)
+        local_context = self._format_local_docs(local_docs) if local_docs else ""
         
         # 检查是否是排名查询
         is_ranking_query = any(keyword in query.lower() for keyword in ['排名', 'ranking', 'rank'])
         
         if is_ranking_query:
             special_instructions = (
-                "SPECIAL INSTRUCTIONS FOR RANKING QUERIES:\n"
-                "1. Carefully extract ALL ranking data from the search results, even if it's not in a standard format.\n"
-                "2. Look for patterns like 'Year #Rank', 'Year: Rank', 'Year ranked', 'Year position', 'Rank #Year', etc.\n"
-                "3. Pay special attention to university official websites which often contain ranking tables.\n"
-                "4. Extract ranking information from titles, snippets, and any visible text.\n"
-                "5. For university rankings, look for both global rankings and regional rankings.\n"
-                "6. If ranking data is scattered across multiple results, compile it into a coherent comparison table.\n"
-                "7. If specific years are missing from the results, explicitly mention which years are not covered.\n"
-                "8. For Chinese universities, look for both English and Chinese names (CUHK/香港中文大學, HKUST/香港科技大學).\n"
-                "9. If ranking data is provided below, use it to create a comprehensive comparison table.\n\n"
-            )
-            # For ranking queries, modify the important rules to allow using pre-extracted ranking data
-            important_rules = (
-                "IMPORTANT RULES FOR RANKING QUERIES:\n"
-                "1. You may use specific ranking data that is EXPLICITLY mentioned in the search results below.\n"
-                "2. You may ALSO use the pre-extracted ranking data provided below the search results.\n"
-                "3. If ranking data is missing for certain years, explicitly mention which years are not covered.\n"
-                "4. DO NOT guess or invent ranking numbers that are not found in either the search results or the pre-extracted data.\n"
-                "5. Create a comprehensive comparison table using all available ranking data.\n\n"
+                "对于排名查询，请特别注意：\n"
+                "1. 如果搜索结果中有具体的排名数据，请使用这些数据\n"
+                "2. 如果没有找到具体的排名数字，请明确说明'未找到具体排名数据'\n"
+                "3. 不要猜测或编造排名数字\n"
+                "4. 如果有多个年份的排名数据，请按时间顺序呈现\n"
+                "5. 如果有多个排名系统（QS、THE、ARWU等），请分别说明\n\n"
             )
         else:
             special_instructions = ""
-            important_rules = (
-                "IMPORTANT RULES:\n"
-                "1. ONLY include specific data (scores, statistics, numbers, names) that are EXPLICITLY mentioned in the search results below.\n"
-                "2. If specific data (like individual player scores, detailed statistics) is NOT found in the search results, "
-                "say '搜索结果中未提及具体数据' or 'not mentioned in search results' - DO NOT guess or invent numbers.\n"
-                "3. For sports queries: only report scores and statistics that appear verbatim in the snippets.\n\n"
-            )
         
-        return (
-            "You are given a set of search results. "
-            "Use them to answer the question at the end. "
-            "When citing sources, use the format (URL 1), (URL 2), etc., "
-            "where the number corresponds to the search result number.\n\n"
-            f"{important_rules}"
-            f"{special_instructions}"
-            f"Search Results:\n{context_block}\n"
-            f"{ranking_info}\n\n"
-            f"Question: {query}\n\n"
-            "Answer (remember: NO fabricated data):"
+        # 构建提示
+        prompt_parts = [
+            f"用户问题：{query}\n\n",
+        ]
+        
+        # 添加搜索结果上下文
+        if search_context:
+            prompt_parts.append("网络搜索结果：\n")
+            prompt_parts.append(search_context)
+            prompt_parts.append("\n\n")
+        
+        # 添加本地文档上下文
+        if local_context:
+            prompt_parts.append("本地文档：\n")
+            prompt_parts.append(local_context)
+            prompt_parts.append("\n\n")
+        
+        # 添加排名信息（如果有）
+        if ranking_info:
+            prompt_parts.append(ranking_info)
+            prompt_parts.append("\n\n")
+        
+        # 添加特殊指令
+        if special_instructions:
+            prompt_parts.append(special_instructions)
+        
+        # 添加最终指令
+        prompt_parts.append(
+            "请基于以上信息回答用户问题。"
+            "如果信息不足，请明确说明。"
+            "请用与用户问题相同的语言回答。"
         )
-
-    def _extract_ranking_data(self, hits: List[SearchHit]) -> Dict[str, object]:
-        """Extract ranking data from search hits for university ranking queries."""
-        import re
         
+        return "".join(prompt_parts)
+
+    def _extract_ranking_data(self, hits: List[SearchHit]) -> Dict[str, Dict[str, int]]:
+        """从搜索结果中提取排名数据"""
         cuhk_rankings = {}
         hkust_rankings = {}
-        other_rankings = {}
         
-        # 信任度评分：官方大学网站 > QS官方网站 > 新闻媒体 > 其他
-        def get_source_trust_score(url: str, title: str) -> int:
-            """根据URL和标题评估来源的信任度"""
-            if not url:
-                return 1
-            
-            url_lower = url.lower()
-            title_lower = title.lower() if title else ""
-            
-            # 官方大学网站
-            if 'cuhk.edu.hk' in url_lower or 'cuhk.edu.cn' in url_lower:
-                return 10
-            if 'hkust.edu.hk' in url_lower:
-                return 10
-            
-            # QS官方网站
-            if 'topuniversities.com' in url_lower and 'university-rankings' in url_lower:
-                return 9
-            
-            # 知名教育媒体
-            if 'timeshighereducation.com' in url_lower:
-                return 8
-            if 'scmp.com' in url_lower:
-                return 7
-            
-            # 一般新闻媒体
-            if any(domain in url_lower for domain in ['news', 'reuters', 'bbc', 'cnn']):
-                return 5
-            
-            # 其他来源
-            return 3
-        
-        for i, hit in enumerate(hits, 1):
-            title = hit.title if hit.title else ''
-            snippet = hit.snippet if hit.snippet else ''
-            url = hit.url if hit.url else ''
-            text = f"{title} {snippet}"
-            
-            # 获取来源信任度
-            trust_score = get_source_trust_score(url, title)
-            
-            # 检查是否与CUHK相关
-            is_cuhk = ('cuhk' in text.lower() or 'chinese university of hong kong' in text.lower() or 
-                       '香港中文' in text or '香港中文大學' in text)
-            
-            # 检查是否与HKUST相关
-            is_hkust = ('hkust' in text.lower() or 'hong kong university of science and technology' in text.lower() or 
-                        '香港科技' in text or '香港科技大學' in text)
-            
-            # 提取排名信息的多种模式，优先使用更精确的模式
-            rank_patterns = [
-                # 高可信度模式：明确的年份和排名组合
-                (r'(20\d{2})[^0-9]*#?(\d{1,3})', 9),  # 2020 #42
-                (r'(20\d{2})[^0-9]*ranked?[^0-9]*(\d{1,3})', 8),  # 2020 ranked 42
-                (r'(20\d{2})[^0-9]*排名[^0-9]*(\d{1,3})', 8),  # 2020 排名 42
-                (r'#?(\d{1,3})[^0-9]*(20\d{2})', 7),  # #42 2020
-                (r'ranked?[^0-9]*(\d{1,3})[^0-9]*(20\d{2})', 7),  # ranked 42 2020
-                (r'排名[^0-9]*(\d{1,3})[^0-9]*(20\d{2})', 7),  # 排名 42 2020
+        for hit in hits:
+            if not hit.snippet:
+                continue
                 
-                # 中等可信度模式：QS相关
-                (r'QS World University Rankings[^0-9]*(\d{1,3})', 6),  # QS World University Rankings 42
-                (r'QS.*?(\d{1,3})', 5),  # QS #42
-                
-                # 低可信度模式：单独的排名信息
-                (r'(\d{1,3})', 3),  # 单独的数字
+            snippet = hit.snippet.lower()
+            
+            # 提取CUHK排名
+            cuhk_patterns = [
+                r"chinese university of hong kong.*?ranked? #?(\d+)",
+                r"cuhk.*?ranked? #?(\d+)",
+                r"香港中文大學.*?排名.*?第?(\d+)",
+                r"香港中文大学.*?排名.*?第?(\d+)"
             ]
             
-            # 对每个模式进行匹配
-            for pattern, pattern_score in rank_patterns:
-                matches = re.findall(pattern, text)
+            for pattern in cuhk_patterns:
+                matches = re.findall(pattern, snippet)
                 for match in matches:
-                    # 处理匹配结果
-                    if isinstance(match, tuple) and len(match) == 2:
-                        # 包含年份和排名的情况
-                        year_str, rank_str = match
-                        if year_str.isdigit() and rank_str.isdigit():
-                            year = int(year_str)
-                            rank = int(rank_str)
-                            
-                            # 验证年份和排名的合理性
-                            if 2000 <= year <= 2030 and 1 <= rank <= 500:
-                                # 额外验证规则：过滤明显不合理的排名
-                                # 对于CUHK和HKUST这样的顶尖大学，世界排名通常在1-100之间
-                                # 排名在200+的可能是特定领域排名或地区排名，需要更严格的验证
-                                is_reasonable_rank = True
-                                if rank > 150:
-                                    # 对于高排名数字，检查是否包含特定关键词
-                                    if not any(keyword in text.lower() for keyword in 
-                                              ['asia', '亚洲', 'subject', '学科', 'faculty', '学院', 'engineering', '工程']):
-                                        # 如果没有明确说明是地区排名或学科排名，降低信任度
-                                        combined_score = trust_score + pattern_score - 5
-                                        print(f"警告: {year}年排名#{rank}可能不是全球排名，降低信任度")
-                                
-                                # 计算综合信任度
-                                combined_score = trust_score + pattern_score
-                                
-                                # 只接受高信任度的数据
-                                if combined_score >= 10:  # 只接受高信任度的数据
-                                    if is_cuhk:
-                                        # 如果该年份已有数据，只保留更高信任度的数据
-                                        if year not in cuhk_rankings or combined_score > cuhk_rankings[year][1]:
-                                            cuhk_rankings[year] = (rank, combined_score)
-                                            print(f"提取到CUHK排名: {year}年 #{rank} (信任度: {combined_score}, 来源: URL {i})")
-                                    elif is_hkust:
-                                        if year not in hkust_rankings or combined_score > hkust_rankings[year][1]:
-                                            hkust_rankings[year] = (rank, combined_score)
-                                            print(f"提取到HKUST排名: {year}年 #{rank} (信任度: {combined_score}, 来源: URL {i})")
-                    elif isinstance(match, str) and match.isdigit():
-                        # 只有排名的情况，尝试从文本中提取年份
-                        rank = int(match)
-                        if 1 <= rank <= 500:
-                            # 尝试从文本中提取年份
-                            year_matches = re.findall(r'\b(20\d{2})\b', text)
-                            for year_str in year_matches:
-                                year = int(year_str)
-                                if 2000 <= year <= 2030:
-                                    # 额外验证规则：过滤明显不合理的排名
-                                    if rank > 150:
-                                        # 对于高排名数字，检查是否包含特定关键词
-                                        if not any(keyword in text.lower() for keyword in 
-                                                  ['asia', '亚洲', 'subject', '学科', 'faculty', '学院', 'engineering', '工程']):
-                                            # 如果没有明确说明是地区排名或学科排名，降低信任度
-                                            pattern_score_adjusted = pattern_score - 5
-                                            print(f"警告: {year}年排名#{rank}可能不是全球排名，降低信任度")
-                                        else:
-                                            pattern_score_adjusted = pattern_score
-                                    else:
-                                        pattern_score_adjusted = pattern_score
-                                    
-                                    # 计算综合信任度
-                                    combined_score = trust_score + pattern_score_adjusted
-                                    
-                                    # 只接受高信任度的数据
-                                    if combined_score >= 10:  # 只接受高信任度的数据
-                                        if is_cuhk:
-                                            if year not in cuhk_rankings or combined_score > cuhk_rankings[year][1]:
-                                                cuhk_rankings[year] = (rank, combined_score)
-                                                print(f"提取到CUHK排名: {year}年 #{rank} (信任度: {combined_score}, 来源: URL {i})")
-                                        elif is_hkust:
-                                            if year not in hkust_rankings or combined_score > hkust_rankings[year][1]:
-                                                hkust_rankings[year] = (rank, combined_score)
-                                                print(f"提取到HKUST排名: {year}年 #{rank} (信任度: {combined_score}, 来源: URL {i})")
-        
-        # 查找包含"top"的排名信息
-        for i, hit in enumerate(hits, 1):
-            title = hit.title if hit.title else ''
-            snippet = hit.snippet if hit.snippet else ''
-            url = hit.url if hit.url else ''
-            text = f"{title} {snippet}"
+                    # 尝试从snippet中提取年份
+                    year_match = re.search(r"\b(20\d{2})\b", snippet)
+                    year = year_match.group(1) if year_match else "未知年份"
+                    cuhk_rankings[year] = int(match)
             
-            # 获取来源信任度
-            trust_score = get_source_trust_score(url, title)
+            # 提取HKUST排名
+            hkust_patterns = [
+                r"hong kong university of science and technology.*?ranked? #?(\d+)",
+                r"hkust.*?ranked? #?(\d+)",
+                r"香港科技大學.*?排名.*?第?(\d+)",
+                r"香港科技大学.*?排名.*?第?(\d+)"
+            ]
             
-            # 查找包含"top"的排名信息
-            top_pattern = r'(20\d{2})[^0-9]*top\s*(\d{1,3})'
-            matches = re.findall(top_pattern, text.lower())
-            for year_str, rank_str in matches:
-                if year_str.isdigit() and rank_str.isdigit():
-                    year = int(year_str)
-                    rank = int(rank_str)
-                    
-                    # 验证年份和排名的合理性
-                    if 2000 <= year <= 2030 and 1 <= rank <= 500:
-                        # 额外验证规则：过滤明显不合理的排名
-                        top_pattern_score = 6  # "top"模式的信任度
-                        if rank > 150:
-                            # 对于高排名数字，检查是否包含特定关键词
-                            if not any(keyword in text.lower() for keyword in 
-                                      ['asia', '亚洲', 'subject', '学科', 'faculty', '学院', 'engineering', '工程']):
-                                # 如果没有明确说明是地区排名或学科排名，降低信任度
-                                top_pattern_score -= 5
-                                print(f"警告: {year}年Top {rank}可能不是全球排名，降低信任度")
-                        
-                        # 计算综合信任度
-                        combined_score = trust_score + top_pattern_score
-                        
-                        # 只接受高信任度的数据
-                        if combined_score >= 10:
-                            is_cuhk = ('cuhk' in text.lower() or 'chinese university of hong kong' in text.lower() or 
-                                       '香港中文' in text or '香港中文大學' in text)
-                            is_hkust = ('hkust' in text.lower() or 'hong kong university of science and technology' in text.lower() or 
-                                         '香港科技' in text or '香港科技大學' in text)
-                            
-                            if is_cuhk:
-                                if year not in cuhk_rankings or combined_score > cuhk_rankings[year][1]:
-                                    cuhk_rankings[year] = (rank, combined_score)
-                                    print(f"提取到CUHK排名(Top): {year}年 Top {rank} (信任度: {combined_score}, 来源: URL {i})")
-                            elif is_hkust:
-                                if year not in hkust_rankings or combined_score > hkust_rankings[year][1]:
-                                    hkust_rankings[year] = (rank, combined_score)
-                                    print(f"提取到HKUST排名(Top): {year}年 Top {rank} (信任度: {combined_score}, 来源: URL {i})")
-        
-        # 提取排名数据，只保留排名值（去掉信任度分数）
-        cuhk_final = {year: data[0] for year, data in cuhk_rankings.items()}
-        hkust_final = {year: data[0] for year, data in hkust_rankings.items()}
+            for pattern in hkust_patterns:
+                matches = re.findall(pattern, snippet)
+                for match in matches:
+                    # 尝试从snippet中提取年份
+                    year_match = re.search(r"\b(20\d{2})\b", snippet)
+                    year = year_match.group(1) if year_match else "未知年份"
+                    hkust_rankings[year] = int(match)
         
         return {
-            'cuhk_rankings': cuhk_final,
-            'hkust_rankings': hkust_final,
-            'other_rankings': other_rankings
+            "cuhk_rankings": cuhk_rankings,
+            "hkust_rankings": hkust_rankings
         }
-
-    def answer(
-        self,
-        query: str,
-        *,
-        search_query: Optional[str] = None,
-        num_search_results: int = 5,
-        per_source_limit: Optional[int] = None,
-        max_tokens: int = 5000,
-        temperature: float = 0.3,
-        freshness: Optional[str] = None,
-        date_restrict: Optional[str] = None,
-        timing_recorder: Optional[TimingRecorder] = None,
-        reference_limit: Optional[int] = None,
-        images: Optional[List[Dict[str, str]]] = None,
-    ) -> Dict[str, object]:
-        # Prefer keyword-focused query generated upstream when available.
-        effective_query = search_query.strip() if search_query else query
-
-        per_source_cap = per_source_limit if per_source_limit is not None else num_search_results
-        hits = self.search_client.search(
-            effective_query,
-            num_results=num_search_results,
-            per_source_limit=per_source_cap,
-            freshness=freshness,
-            date_restrict=date_restrict,
-        )
-        
-        # 检查是否需要LLM fallback（针对时间变化类查询）
-        if self._is_temporal_change_query(query):
-            # 对于时间变化查询，总是尝试执行颗粒化搜索以获取更全面的历史数据
-            print("🔄 检测到时间变化查询，启动LLM fallback机制以获取历史数据...")
-            fallback_hits = self._perform_granular_search_fallback(query, effective_query, num_search_results, per_source_cap, freshness, date_restrict, timing_recorder)
-            if fallback_hits:
-                hits = fallback_hits
-                print(f"✅ Fallback搜索完成，获得{len(fallback_hits)}条结果")
-        
-        # 检查是否是排名查询，如果是则提取排名数据
-        is_ranking_query = any(keyword in query.lower() for keyword in ['排名', 'ranking', 'rank'])
-        ranking_data = None
-        if is_ranking_query:
-            print("🔍 检测到排名查询，提取排名数据...")
-            ranking_data = self._extract_ranking_data(hits)
-            print(f"✅ 提取到CUHK排名数据: {ranking_data['cuhk_rankings']}")
-            print(f"✅ 提取到HKUST排名数据: {ranking_data['hkust_rankings']}")
-        if timing_recorder:
-            timings_getter = getattr(self.search_client, "get_last_timings", None)
-            if callable(timings_getter):
-                timing_recorder.extend_search_timings(timings_getter())
-        search_warnings: List[str] = []
-        get_last_errors = getattr(self.search_client, "get_last_errors", None)
-        if callable(get_last_errors):
-            errors = get_last_errors() or []
-            if hits and errors:
-                for item in errors:
-                    source = str(item.get("source") or "搜索服务")
-                    detail = str(item.get("error") or "未知错误")
-                    if source.lower().startswith("mcp"):
-                        search_warnings.append(f"{source} 未正常工作，已使用其他搜索结果。原因：{detail}")
-                    else:
-                        search_warnings.append(f"{source} 出现异常：{detail}")
-        hits, rerank_meta = self._apply_rerank(query, hits, limit=num_search_results)
-        # 如果是排名查询且有提取的排名数据，则将其添加到提示中
-        if is_ranking_query and ranking_data:
-            ranking_info = "\n\n提取的排名数据:\n"
-            if ranking_data['cuhk_rankings']:
-                ranking_info += "CUHK排名:\n"
-                for year, rank in sorted(ranking_data['cuhk_rankings'].items()):
-                    ranking_info += f"- {year}年: #{rank}\n"
-            
-            if ranking_data['hkust_rankings']:
-                ranking_info += "HKUST排名:\n"
-                for year, rank in sorted(ranking_data['hkust_rankings'].items()):
-                    ranking_info += f"- {year}年: #{rank}\n"
-            
-            # 修改提示以包含排名数据
-            context_block = self._format_search_hits(hits)
-            user_prompt = self.build_prompt(query, hits, ranking_info)
-        else:
-            user_prompt = self.build_prompt(query, hits)
-        response_start = time.perf_counter()
-        try:
-            response = self.llm_client.chat(
-                system_prompt=self.system_prompt,
-                user_prompt=user_prompt,
-                max_tokens=max_tokens,
-                temperature=temperature,
-                images=images,
-            )
-        finally:
-            if timing_recorder:
-                duration_ms = (time.perf_counter() - response_start) * 1000
-                timing_recorder.record_llm_call(
-                    label="search_answer",
-                    duration_ms=duration_ms,
-                    provider=getattr(self.llm_client, "provider", None),
-                    model=getattr(self.llm_client, "model_id", None),
-                )
-
-        # Build answer with URL references
-        answer = response.get("content")
-        reference_hits = hits if reference_limit is None else hits[:reference_limit]
-        if answer and reference_hits:
-            # Append reference list
-            answer += "\n\n**参考链接：**\n"
-            for idx, hit in enumerate(reference_hits, start=1):
-                url = hit.url or "No URL available."
-                title = hit.title or f"结果 {idx}"
-                answer += f"{idx}. [{title}]({url})\n"
-
-        result: Dict[str, object] = {
-            "query": query,
-            "answer": answer,
-            "search_hits": [asdict(hit) for hit in hits],
-            "llm_raw": response.get("raw"),
-            "llm_warning": response.get("warning"),
-            "llm_error": response.get("error"),
-            "rerank": rerank_meta or None,
-            "search_query": effective_query,
-        }
-        if search_warnings:
-            result["search_warnings"] = search_warnings
-        return result
-
-    def answer_stream(
-        self,
-        query: str,
-        *,
-        search_query: Optional[str] = None,
-        num_search_results: int = 5,
-        per_source_limit: Optional[int] = None,
-        max_tokens: int = 5000,
-        temperature: float = 0.3,
-        freshness: Optional[str] = None,
-        date_restrict: Optional[str] = None,
-        timing_recorder: Optional[TimingRecorder] = None,
-        reference_limit: Optional[int] = None,
-    ):
-        # Prefer keyword-focused query generated upstream when available.
-        effective_query = search_query.strip() if search_query else query
-
-        per_source_cap = per_source_limit if per_source_limit is not None else num_search_results
-        hits = self.search_client.search(
-            effective_query,
-            num_results=num_search_results,
-            per_source_limit=per_source_cap,
-            freshness=freshness,
-            date_restrict=date_restrict,
-        )
-        if timing_recorder:
-            timings_getter = getattr(self.search_client, "get_last_timings", None)
-            if callable(timings_getter):
-                timing_recorder.extend_search_timings(timings_getter())
-        search_warnings: List[str] = []
-        get_last_errors = getattr(self.search_client, "get_last_errors", None)
-        if callable(get_last_errors):
-            errors = get_last_errors() or []
-            if hits and errors:
-                for item in errors:
-                    source = str(item.get("source") or "搜索服务")
-                    detail = str(item.get("error") or "未知错误")
-                    if source.lower().startswith("mcp"):
-                        search_warnings.append(f"{source} 未正常工作，已使用其他搜索结果。原因：{detail}")
-                    else:
-                        search_warnings.append(f"{source} 出现异常：{detail}")
-        
-        hits, rerank_meta = self._apply_rerank(query, hits, limit=num_search_results)
-
-        # First, yield preliminary data
-        preliminary_data = {
-            "query": query,
-            "search_hits": [asdict(hit) for hit in hits],
-            "rerank": rerank_meta or None,
-            "search_query": effective_query,
-        }
-        if search_warnings:
-            preliminary_data["search_warnings"] = search_warnings
-        
-        yield json.dumps({"type": "preliminary", "data": preliminary_data})
-
-
-        user_prompt = self.build_prompt(query, hits)
-        response_start = time.perf_counter()
-        
-        # Stream the response
-        full_answer = ""
-        try:
-            stream = self.llm_client.chat_stream(
-                system_prompt=self.system_prompt,
-                user_prompt=user_prompt,
-                max_tokens=max_tokens,
-                temperature=temperature,
-            )
-            for chunk in stream:
-                if chunk.startswith("Error:"):
-                    yield json.dumps({"type": "error", "data": chunk})
-                    return
-                full_answer += chunk
-                yield json.dumps({"type": "content", "data": chunk})
-
-        finally:
-            if timing_recorder:
-                duration_ms = (time.perf_counter() - response_start) * 1000
-                timing_recorder.record_llm_call(
-                    label="search_answer_stream",
-                    duration_ms=duration_ms,
-                    provider=getattr(self.llm_client, "provider", None),
-                    model=getattr(self.llm_client, "model_id", None),
-                )
-
-        # Finally, yield the references
-        reference_hits = hits if reference_limit is None else hits[:reference_limit]
-        if full_answer and reference_hits:
-            reference_text = "\n\n**参考链接：**\n"
-            for idx, hit in enumerate(reference_hits, start=1):
-                url = hit.url or "No URL available."
-                title = hit.title or f"结果 {idx}"
-                reference_text += f"{idx}. [{title}]({url})\n"
-            yield json.dumps({"type": "references", "data": reference_text})
 
     def _apply_rerank(
         self,
@@ -885,6 +637,16 @@ class NoRAGBaseline:
         max_results = limit or len(reranked)
 
         for item in reranked:
+            if item.score < self.min_rerank_score:
+                metadata.append(
+                    {
+                        "url": item.hit.url,
+                        "score": item.score,
+                        "dropped": "below_min_score",
+                    }
+                )
+                continue
+
             domain = self._extract_domain(item.hit.url)
             if domain and domain_counts.get(domain, 0) >= self.max_per_domain:
                 metadata.append(
@@ -892,15 +654,6 @@ class NoRAGBaseline:
                         "url": item.hit.url,
                         "score": item.score,
                         "dropped": "per_domain_limit",
-                    }
-                )
-                continue
-            if item.score is not None and item.score < self.min_rerank_score:
-                metadata.append(
-                    {
-                        "url": item.hit.url,
-                        "score": item.score,
-                        "dropped": "below_min_score",
                     }
                 )
                 continue
@@ -930,3 +683,313 @@ class NoRAGBaseline:
         if not url:
             return None
         return urlparse(url).netloc or None
+
+    def answer(
+        self,
+        query: str,
+        *,
+        search_query: Optional[str] = None,
+        num_search_results: int = 5,
+        per_source_limit: Optional[int] = None,
+        num_retrieved_docs: int = 5,
+        max_tokens: int = 5000,
+        temperature: float = 0.3,
+        enable_search: bool = True,
+        enable_local_docs: bool = True,
+        reference_limit: Optional[int] = None,
+        freshness: Optional[str] = None,
+        date_restrict: Optional[str] = None,
+        timing_recorder: Optional[TimingRecorder] = None,
+        images: Optional[List[Dict[str, str]]] = None,
+    ) -> Dict[str, object]:
+        """Answer a query using the SearchRAG pipeline."""
+        hits: List[SearchHit] = []
+        effective_query = search_query.strip() if search_query else query
+        search_error: Optional[str] = None
+
+        search_warnings: List[str] = []
+        raw_hits: List[SearchHit] = []
+
+        # 执行搜索
+        if enable_search:
+            try:
+                per_source_cap = per_source_limit if per_source_limit is not None else num_search_results
+                
+                # Calculate fetch limit to ensure we get enough candidates for reranking
+                # If reranker is enabled, we want to fetch (per_source_cap * num_sources) results
+                # CombinedSearchClient will aggregate them.
+                fetch_limit = num_search_results
+                if self.reranker:
+                    num_sources = 1
+                    if hasattr(self.search_client, "clients"):
+                        num_sources = len(self.search_client.clients)
+                    fetch_limit = per_source_cap * num_sources
+
+                raw_hits = self.search_client.search(
+                    effective_query,
+                    num_results=fetch_limit,
+                    per_source_limit=per_source_cap,
+                    freshness=freshness,
+                    date_restrict=date_restrict,
+                )
+                hits = list(raw_hits)
+            except Exception as exc:
+                # Surface search errors while still letting the LLM see local docs
+                hits = []
+                search_error = str(exc)
+            finally:
+                if timing_recorder:
+                    timings_getter = getattr(self.search_client, "get_last_timings", None)
+                    if callable(timings_getter):
+                        timing_recorder.extend_search_timings(timings_getter())
+
+        if raw_hits:
+            get_last_errors = getattr(self.search_client, "get_last_errors", None)
+            if callable(get_last_errors):
+                errors = get_last_errors() or []
+                if errors:
+                    for item in errors:
+                        source = str(item.get("source") or "搜索服务")
+                        detail = str(item.get("error") or "未知错误")
+                        if source.lower().startswith("mcp"):
+                            search_warnings.append(f"{source} 未正常工作，已使用其他搜索结果。原因：{detail}")
+                        else:
+                            search_warnings.append(f"{source} 出现异常：{detail}")
+
+        # 应用重排序
+        hits, rerank_meta = self._apply_rerank(query, hits, limit=num_search_results)
+
+        # 检查是否需要LLM fallback（针对时间变化类查询）
+        if enable_search and self._is_temporal_change_query(query):
+            # 对于时间变化查询，总是尝试执行颗粒化搜索以获取更全面的历史数据
+            print("🔄 检测到时间变化查询，启动LLM fallback机制以获取历史数据...")
+            fallback_hits = self._perform_granular_search_fallback(query, effective_query, num_search_results, per_source_cap, freshness, date_restrict, timing_recorder)
+            if fallback_hits:
+                hits = fallback_hits
+                print(f"✅ Fallback搜索完成，获得{len(fallback_hits)}条结果")
+        
+        # 检查是否是排名查询，如果是则提取排名数据
+        is_ranking_query = any(keyword in query.lower() for keyword in ['排名', 'ranking', 'rank'])
+        ranking_data = None
+        if is_ranking_query:
+            print("🔍 检测到排名查询，提取排名数据...")
+            ranking_data = self._extract_ranking_data(hits)
+            print(f"✅ 提取到CUHK排名数据: {ranking_data['cuhk_rankings']}")
+            print(f"✅ 提取到HKUST排名数据: {ranking_data['hkust_rankings']}")
+        
+        # 检索本地文档
+        retrieved_docs: List[Document] = []
+        if enable_local_docs and self.vector_store:
+            retrieved_docs = self.vector_store.search(query, k=num_retrieved_docs)
+
+        # 构建提示
+        if is_ranking_query and ranking_data:
+            ranking_info = "\n\n提取的排名数据:\n"
+            if ranking_data['cuhk_rankings']:
+                ranking_info += "CUHK排名:\n"
+                for year, rank in sorted(ranking_data['cuhk_rankings'].items()):
+                    ranking_info += f"- {year}年: #{rank}\n"
+            
+            if ranking_data['hkust_rankings']:
+                ranking_info += "HKUST排名:\n"
+                for year, rank in sorted(ranking_data['hkust_rankings'].items()):
+                    ranking_info += f"- {year}年: #{rank}\n"
+            
+            user_prompt = self.build_prompt(query, hits, retrieved_docs, ranking_info)
+        else:
+            user_prompt = self.build_prompt(query, hits, retrieved_docs)
+
+        # 调用LLM生成答案
+        response_start = time.perf_counter()
+        try:
+            response = self.llm_client.chat(
+                system_prompt=self.system_prompt,
+                user_prompt=user_prompt,
+                max_tokens=max_tokens,
+                temperature=temperature,
+                images=images,
+            )
+        finally:
+            if timing_recorder:
+                duration_ms = (time.perf_counter() - response_start) * 1000
+                timing_recorder.record_llm_call(
+                    label="search_rag_answer",
+                    duration_ms=duration_ms,
+                    provider=getattr(self.llm_client, "provider", None),
+                    model=getattr(self.llm_client, "model_id", None),
+                )
+
+        # 构建答案
+        answer = response.get("content")
+        reference_hits = hits if reference_limit is None else hits[:reference_limit]
+        
+        if answer:
+            # 添加网络来源引用
+            if reference_hits:
+                answer += "\n\n**网络来源：**\n"
+                for idx, hit in enumerate(reference_hits, start=1):
+                    title = hit.title or f"Result {idx}"
+                    url = hit.url or ""
+                    bullet = f"{idx}. [{title}]({url})" if url else f"{idx}. {title}"
+                    answer += f"{bullet}\n"
+            
+            # 添加本地文档引用
+            if retrieved_docs:
+                answer += "\n\n**本地文档来源：**\n"
+                for idx, doc in enumerate(retrieved_docs, start=1):
+                    source = doc.source or f"文档 {idx}"
+                    answer += f"{idx}. {source}\n"
+
+        # 构建返回结果
+        payload: Dict[str, object] = {
+            "query": query,
+            "answer": answer,
+            "search_hits": [asdict(hit) for hit in hits],
+            "retrieved_docs": [asdict(doc) for doc in retrieved_docs],
+            "llm_raw": response.get("raw"),
+            "llm_warning": response.get("warning"),
+            "llm_error": response.get("error"),
+            "rerank": rerank_meta or None,
+        }
+        
+        if search_error:
+            payload["search_error"] = search_error
+        if search_warnings:
+            payload["search_warnings"] = search_warnings
+        if ranking_data:
+            payload["ranking_data"] = ranking_data
+
+        return payload
+
+    def answer_stream(
+        self,
+        query: str,
+        *,
+        search_query: Optional[str] = None,
+        num_search_results: int = 5,
+        per_source_limit: Optional[int] = None,
+        num_retrieved_docs: int = 5,
+        max_tokens: int = 5000,
+        temperature: float = 0.3,
+        enable_search: bool = True,
+        enable_local_docs: bool = True,
+        reference_limit: Optional[int] = None,
+        freshness: Optional[str] = None,
+        date_restrict: Optional[str] = None,
+        timing_recorder: Optional[TimingRecorder] = None,
+    ):
+        import json
+        
+        # Prefer keyword-focused query generated upstream when available.
+        effective_query = search_query.strip() if search_query else query
+
+        per_source_cap = per_source_limit if per_source_limit is not None else num_search_results
+        hits = []
+        search_warnings: List[str] = []
+        
+        # 执行搜索
+        if enable_search:
+            hits = self.search_client.search(
+                effective_query,
+                num_results=num_search_results,
+                per_source_limit=per_source_cap,
+                freshness=freshness,
+                date_restrict=date_restrict,
+            )
+            
+            if timing_recorder:
+                timings_getter = getattr(self.search_client, "get_last_timings", None)
+                if callable(timings_getter):
+                    timing_recorder.extend_search_timings(timings_getter())
+            
+            get_last_errors = getattr(self.search_client, "get_last_errors", None)
+            if callable(get_last_errors):
+                errors = get_last_errors() or []
+                if hits and errors:
+                    for item in errors:
+                        source = str(item.get("source") or "搜索服务")
+                        detail = str(item.get("error") or "未知错误")
+                        if source.lower().startswith("mcp"):
+                            search_warnings.append(f"{source} 未正常工作，已使用其他搜索结果。原因：{detail}")
+                        else:
+                            search_warnings.append(f"{source} 出现异常：{detail}")
+        
+        # 应用重排序
+        hits, rerank_meta = self._apply_rerank(query, hits, limit=num_search_results)
+
+        # 检查是否需要LLM fallback（针对时间变化类查询）
+        if enable_search and self._is_temporal_change_query(query):
+            # 对于时间变化查询，总是尝试执行颗粒化搜索以获取更全面的历史数据
+            print("🔄 检测到时间变化查询，启动LLM fallback机制以获取历史数据...")
+            fallback_hits = self._perform_granular_search_fallback(query, effective_query, num_search_results, per_source_cap, freshness, date_restrict, timing_recorder)
+            if fallback_hits:
+                hits = fallback_hits
+                print(f"✅ Fallback搜索完成，获得{len(fallback_hits)}条结果")
+
+        # 检索本地文档
+        retrieved_docs: List[Document] = []
+        if enable_local_docs and self.vector_store:
+            retrieved_docs = self.vector_store.search(query, k=num_retrieved_docs)
+
+        # First, yield preliminary data
+        preliminary_data = {
+            "query": query,
+            "search_hits": [asdict(hit) for hit in hits],
+            "retrieved_docs": [asdict(doc) for doc in retrieved_docs],
+            "rerank": rerank_meta or None,
+            "search_query": effective_query,
+        }
+        if search_warnings:
+            preliminary_data["search_warnings"] = search_warnings
+        
+        yield json.dumps({"type": "preliminary", "data": preliminary_data})
+
+        user_prompt = self.build_prompt(query, hits, retrieved_docs)
+        response_start = time.perf_counter()
+        
+        # Stream the response
+        full_answer = ""
+        try:
+            stream = self.llm_client.chat_stream(
+                system_prompt=self.system_prompt,
+                user_prompt=user_prompt,
+                max_tokens=max_tokens,
+                temperature=temperature,
+            )
+            for chunk in stream:
+                if chunk.startswith("Error:"):
+                    yield json.dumps({"type": "error", "data": chunk})
+                    return
+                full_answer += chunk
+                yield json.dumps({"type": "content", "data": chunk})
+
+        finally:
+            if timing_recorder:
+                duration_ms = (time.perf_counter() - response_start) * 1000
+                timing_recorder.record_llm_call(
+                    label="search_rag_answer_stream",
+                    duration_ms=duration_ms,
+                    provider=getattr(self.llm_client, "provider", None),
+                    model=getattr(self.llm_client, "model_id", None),
+                )
+
+        # Finally, yield the references
+        reference_hits = hits if reference_limit is None else hits[:reference_limit]
+        if full_answer:
+            # 添加网络来源引用
+            if reference_hits:
+                reference_text = "\n\n**网络来源：**\n"
+                for idx, hit in enumerate(reference_hits, start=1):
+                    title = hit.title or f"Result {idx}"
+                    url = hit.url or ""
+                    bullet = f"{idx}. [{title}]({url})" if url else f"{idx}. {title}"
+                    reference_text += f"{bullet}\n"
+                yield json.dumps({"type": "references", "data": reference_text})
+            
+            # 添加本地文档引用
+            if retrieved_docs:
+                reference_text = "\n\n**本地文档来源：**\n"
+                for idx, doc in enumerate(retrieved_docs, start=1):
+                    source = doc.source or f"文档 {idx}"
+                    reference_text += f"{idx}. {source}\n"
+                yield json.dumps({"type": "local_references", "data": reference_text})
