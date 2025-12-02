@@ -4,6 +4,7 @@ import os
 import sys
 import re
 import time
+import logging
 from dataclasses import asdict
 from typing import Dict, List, Optional, Tuple
 from urllib.parse import urlparse
@@ -14,8 +15,15 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from llm.api import HKGAIClient
 from langchain.langchain_support import Document, FileReader, LangChainVectorStore
 from search.rerank import BaseReranker
-from search.search import SearchClient, SearchHit
+from search.search import SearchClient, SearchHit, GoogleSearchClient
 from utils.timing_utils import TimingRecorder
+
+# Configure logging
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+)
+logger = logging.getLogger(__name__)
 
 
 DEFAULT_SYSTEM_PROMPT = (
@@ -116,7 +124,35 @@ class SearchRAG:
         ]
         query_lower = query.lower()
         return any(keyword in query_lower for keyword in temporal_change_keywords)
-    
+
+    def _check_google_client_availability(self) -> Optional[GoogleSearchClient]:
+        """
+        Enhanced Google search client availability check with comprehensive error handling
+        """
+        logger.info("🔍 Checking Google search client availability...")
+
+        # Check if search_client is CombinedSearchClient with clients
+        if hasattr(self.search_client, "clients"):
+            logger.debug(f"   Found clients attribute, client count: {len(self.search_client.clients)}")
+
+            for i, client in enumerate(self.search_client.clients):
+                logger.debug(f"   Client {i}: {type(client)}")
+                if hasattr(client, "source_id"):
+                    logger.debug(f"      source_id: {client.source_id}")
+                    if client.source_id == "google":
+                        logger.info("   ✅ Found Google search client!")
+                        return client
+        else:
+            logger.debug("   ❌ search_client has no clients attribute")
+
+        # Check if search_client itself is a GoogleSearchClient
+        if isinstance(self.search_client, GoogleSearchClient):
+            logger.info("   ✅ search_client is a GoogleSearchClient!")
+            return self.search_client
+
+        logger.warning("⚠️ No Google search client found")
+        return None
+
     def _should_fallback_to_granular_search(self, query: str, hits: List[SearchHit]) -> bool:
         """判断是否应该进行颗粒化搜索fallback"""
         if not hits:
@@ -249,27 +285,20 @@ class SearchRAG:
         
         # 第四步：执行颗粒化搜索（对于时间变化查询总是执行）
         if years:  # 移除_should_fallback_to_granular_search检查，确保总是执行颗粒化搜索
-            print("🔍 开始颗粒化搜索...")
+            logger.info("🔍 Starting granular search...")
+            granular_search_start = time.perf_counter()
             granular_hits = []
-            
-            # 只使用Google搜索进行颗粒化查询
-            google_client = None
-            print(f"🔍 查找Google搜索客户端...")
-            print(f"   search_client类型: {type(self.search_client)}")
-            print(f"   search_client属性: {dir(self.search_client)}")
-            
-            # 检查search_client是否是CombinedSearchClient
-            if hasattr(self.search_client, "clients"):
-                print(f"   找到clients属性，客户端数量: {len(self.search_client.clients)}")
-                for i, client in enumerate(self.search_client.clients):
-                    print(f"   客户端 {i}: {type(client)}")
-                    if hasattr(client, "source_id"):
-                        print(f"      source_id: {client.source_id}")
-                    if hasattr(client, "source_id") and client.source_id == "google":
-                        google_client = client
-                        print(f"   ✅ 找到Google搜索客户端!")
-            else:
-                print(f"   ❌ search_client没有clients属性")
+
+            # 使用增强的Google客户端可用性检查
+            google_client = self._check_google_client_availability()
+
+            if not google_client:
+                logger.warning("⚠️ No Google search client available, cannot perform granular search")
+                return broad_hits
+
+            # Add performance monitoring for granular search
+            if timing_recorder:
+                timing_recorder.start_operation("granular_search")
             
             if google_client:
                 # 优化颗粒化查询：智能选择关键年份
@@ -379,8 +408,12 @@ class SearchRAG:
                             date_restrict=f"{year}-01-01..{year}-12-31",  # 限制在特定年份内
                         )
                         granular_hits.extend(year_hits)
+                        logger.debug(f"✅ Successfully searched year {year}, got {len(year_hits)} results")
                     except Exception as e:
-                        print(f"年份 {year} 搜索失败: {e}")
+                        logger.error(f"❌ Year {year} search failed: {e}")
+                        logger.debug(f"   Query: {year_query}")
+                        if timing_recorder:
+                            timing_recorder.record_error(f"granular_search_year_{year}", str(e))
                 
                 # 合并宽泛搜索和颗粒化搜索结果，优先保留颗粒化搜索结果
                 all_hits = granular_hits + broad_hits
@@ -409,13 +442,27 @@ class SearchRAG:
                     return score
                 
                 deduped_hits.sort(key=hit_relevance_score, reverse=True)
-                
-                print(f"✅ 颗粒化搜索完成，共获得 {len(deduped_hits)} 条结果")
+
+                # Record granular search performance
+                granular_search_duration = (time.perf_counter() - granular_search_start) * 1000
+                logger.info(f"✅ Granular search completed in {granular_search_duration:.2f}ms, obtained {len(deduped_hits)} results")
+
+                if timing_recorder:
+                   timing_recorder.end_operation("granular_search", {
+                       "duration_ms": granular_search_duration,
+                       "results_count": len(deduped_hits),
+                       "years_queried": len(selected_years),
+                       "google_client_available": google_client is not None
+                   })
+
                 return deduped_hits[:num_search_results * 2]  # 返回更多结果以便筛选
             else:
-                print("⚠️ 未找到Google搜索客户端，无法执行颗粒化搜索")
+                logger.warning("⚠️ No Google search client available, cannot perform granular search")
+                if timing_recorder:
+                   timing_recorder.record_error("granular_search", "No Google client available")
                 return broad_hits
         else:
+            logger.info("No years specified for granular search")
             return broad_hits
 
     def build_prompt(self, query: str, hits: List[SearchHit], local_docs: List[Document] = None, ranking_info: str = "") -> str:
@@ -473,52 +520,261 @@ class SearchRAG:
         return "".join(prompt_parts)
 
     def _extract_ranking_data(self, hits: List[SearchHit]) -> Dict[str, Dict[str, int]]:
-        """从搜索结果中提取排名数据"""
+        """从搜索结果中提取排名数据 - 优化版本，增强正则表达式覆盖范围和匹配能力"""
+        logger.info("🔍 Starting ranking data extraction from search results...")
+
         cuhk_rankings = {}
         hkust_rankings = {}
-        
-        for hit in hits:
+
+        # Enhanced regex patterns for university names and ranking indicators
+        university_patterns = {
+            "cuhk": [
+                r"chinese university of hong kong",
+                r"cuhk",
+                r"香港中文大學",
+                r"香港中文大学",
+                r"港中大",
+                r"中文大學",
+                r"中文大学"
+            ],
+            "hkust": [
+                r"hong kong university of science and technology",
+                r"hkust",
+                r"香港科技大學",
+                r"香港科技大学",
+                r"港科大",
+                r"科技大學",
+                r"科技大学"
+            ]
+        }
+
+        # Enhanced ranking patterns with broader coverage
+        ranking_patterns = [
+            r"ranked? #?(\d+)",
+            r"排名.*?第?(\d+)",
+            r"position #?(\d+)",
+            r"top\s*(\d+)",
+            r"#(\d+)",
+            r"(\d+)\s*(?:st|nd|rd|th)",
+            r"(\d+)\s*位",
+            r"(\d+)\s*名"
+        ]
+
+        # Enhanced year patterns with broader coverage
+        year_patterns = [
+            r"\b(20\d{2})\b",  # 4-digit years starting with 20
+            r"(\d{4})年",      # Chinese format: 2023年
+            r"(\d{4})年度",    # Chinese format: 2023年度
+            r"\b(19\d{2})\b"   # 4-digit years starting with 19 (for historical data)
+        ]
+
+        for hit_idx, hit in enumerate(hits):
             if not hit.snippet:
                 continue
-                
+
             snippet = hit.snippet.lower()
-            
-            # 提取CUHK排名
-            cuhk_patterns = [
-                r"chinese university of hong kong.*?ranked? #?(\d+)",
-                r"cuhk.*?ranked? #?(\d+)",
-                r"香港中文大學.*?排名.*?第?(\d+)",
-                r"香港中文大学.*?排名.*?第?(\d+)"
-            ]
-            
-            for pattern in cuhk_patterns:
-                matches = re.findall(pattern, snippet)
-                for match in matches:
-                    # 尝试从snippet中提取年份
-                    year_match = re.search(r"\b(20\d{2})\b", snippet)
-                    year = year_match.group(1) if year_match else "未知年份"
-                    cuhk_rankings[year] = int(match)
-            
-            # 提取HKUST排名
-            hkust_patterns = [
-                r"hong kong university of science and technology.*?ranked? #?(\d+)",
-                r"hkust.*?ranked? #?(\d+)",
-                r"香港科技大學.*?排名.*?第?(\d+)",
-                r"香港科技大学.*?排名.*?第?(\d+)"
-            ]
-            
-            for pattern in hkust_patterns:
-                matches = re.findall(pattern, snippet)
-                for match in matches:
-                    # 尝试从snippet中提取年份
-                    year_match = re.search(r"\b(20\d{2})\b", snippet)
-                    year = year_match.group(1) if year_match else "未知年份"
-                    hkust_rankings[year] = int(match)
-        
+            logger.debug(f"Processing hit {hit_idx + 1}: {hit.title[:50]}...")
+
+            # Extract year information first
+            extracted_years = []
+            for year_pattern in year_patterns:
+                year_matches = re.findall(year_pattern, snippet)
+                for match in year_matches:
+                    # Handle different match formats from regex
+                    if isinstance(match, tuple):
+                        year_str = match[0]
+                    else:
+                        year_str = match
+
+                    # Clean up year string
+                    year_str = str(year_str).strip()
+
+                    # Convert 2-digit years to 4-digit (assuming 2000s)
+                    if len(year_str) == 2:
+                        year = f"20{year_str}"
+                        if 2000 <= int(year) <= 2099:
+                            extracted_years.append(year)
+                    elif len(year_str) == 4 and year_str.startswith(('20', '19')):
+                        extracted_years.append(year_str)
+                    elif '年' in year_str:
+                        # Extract year from Chinese format like "2022年"
+                        year_match = re.search(r'(\d{4})年', year_str)
+                        if year_match:
+                            extracted_years.append(year_match.group(1))
+
+            # Remove duplicates and sort
+            unique_years = sorted(list(set(extracted_years)), reverse=True)
+            logger.debug(f"   Extracted years: {unique_years}")
+
+            # Extract CUHK rankings with enhanced patterns
+            for year in unique_years:
+                # Look for year followed immediately by ranking information
+                # Use multiple specific patterns to catch different formats
+                ranking_patterns = [
+                    rf"{year}.*?(?:ranked?)\s+#(\d+)",  # "2022 ranked #45"
+                    rf"{year}.*?(?:ranked?)\s+(\d+)(?:st|nd|rd|th)",  # "2022 ranked 45th"
+                    rf"{year}.*?#(\d+)",  # "2022 #45"
+                    rf"{year}.*?第(\d+)",  # "2022 第45"
+                    rf"{year}.*?(\d+)(?:st|nd|rd|th)",  # "2022 45th"
+                    rf"{year}.*?(\d+)\s*(?:位|名)",  # "2022 45位"
+                    rf"{year}.*?and\s+(\d+)(?:st|nd|rd|th)",  # "2022 and 45th"
+                    rf"{year}.*?in\s+(\d+)"  # "2022 in 45"
+                ]
+
+                for ranking_pattern in ranking_patterns:
+                    ranking_matches = re.findall(ranking_pattern, snippet, re.IGNORECASE)
+                    if ranking_matches:
+                        for match in ranking_matches:
+                            try:
+                                if isinstance(match, tuple):
+                                    rank_str = match[-1]  # Get the last group (the ranking number)
+                                else:
+                                    rank_str = match
+
+                                rank = int(rank_str)
+                                if 1 <= rank <= 1000:  # Reasonable ranking range
+                                    # Check if CUHK is mentioned in the snippet
+                                    cuhk_found = False
+                                    for cuhk_pattern in university_patterns["cuhk"]:
+                                        if re.search(cuhk_pattern, snippet, re.IGNORECASE):
+                                            cuhk_found = True
+                                            break
+
+                                    if cuhk_found:
+                                        cuhk_rankings[year] = rank
+                                        logger.debug(f"   CUHK {year}: #{rank} via pattern: {ranking_pattern}")
+                                        break
+                            except (ValueError, IndexError) as e:
+                                logger.debug(f"   Failed to extract CUHK {year} rank from '{match}': {e}")
+                                continue
+                        if year in cuhk_rankings:  # Found a ranking for this year
+                            break
+
+            # Extract HKUST rankings with enhanced patterns
+            for year in unique_years:
+                # Look for year followed immediately by ranking information
+                # Use multiple patterns to catch different formats
+                ranking_patterns = [
+                    rf"{year}.*?(?:ranked?)\s+#?(\d+)",  # "2022 ranked #45"
+                    rf"{year}.*?(?:ranked?)\s+(\d+)(?:st|nd|rd|th)",  # "2022 ranked 45th"
+                    rf"{year}.*?#(\d+)",  # "2022 #45"
+                    rf"{year}.*?第(\d+)",  # "2022 第45"
+                    rf"{year}.*?(\d+)(?:st|nd|rd|th)",  # "2022 45th"
+                    rf"{year}.*?(\d+)\s*(?:位|名)"  # "2022 45位"
+                ]
+
+                for ranking_pattern in ranking_patterns:
+                    ranking_matches = re.findall(ranking_pattern, snippet, re.IGNORECASE)
+                    if ranking_matches:
+                        for match in ranking_matches:
+                            try:
+                                if isinstance(match, tuple):
+                                    rank_str = match[-1]  # Get the last group (the ranking number)
+                                else:
+                                    rank_str = match
+
+                                rank = int(rank_str)
+                                if 1 <= rank <= 1000:  # Reasonable ranking range
+                                    # Check if HKUST is mentioned in the snippet
+                                    hkust_found = False
+                                    for hkust_pattern in university_patterns["hkust"]:
+                                        if re.search(hkust_pattern, snippet, re.IGNORECASE):
+                                            hkust_found = True
+                                            break
+
+                                    if hkust_found:
+                                        hkust_rankings[year] = rank
+                                        logger.debug(f"   HKUST {year}: #{rank} via pattern: {ranking_pattern}")
+                                        break
+                            except (ValueError, IndexError) as e:
+                                logger.debug(f"   Failed to extract HKUST {year} rank from '{match}': {e}")
+                                continue
+                        if year in hkust_rankings:  # Found a ranking for this year
+                            break
+
+        logger.info(f"✅ Ranking data extraction completed. CUHK: {len(cuhk_rankings)} entries, HKUST: {len(hkust_rankings)} entries")
         return {
             "cuhk_rankings": cuhk_rankings,
             "hkust_rankings": hkust_rankings
         }
+
+    def _validate_and_integrate_ranking_data(self, ranking_data: Dict[str, Dict[str, int]]) -> Dict[str, Dict[str, int]]:
+        """
+        Validate and integrate ranking data with comprehensive data quality checks
+        """
+        logger.info("🔍 Validating and integrating ranking data...")
+
+        validated_data = {
+            "cuhk_rankings": {},
+            "hkust_rankings": {}
+        }
+
+        # Validate CUHK rankings
+        for year, rank in ranking_data.get("cuhk_rankings", {}).items():
+            try:
+                # Convert year to string if it's not already
+                year_str = str(year)
+
+                # Validate year format and range
+                if not year_str.startswith("20") or len(year_str) != 4:
+                    logger.warning(f"Invalid CUHK year format: {year_str}")
+                    continue
+
+                year_int = int(year_str)
+                if year_int < 2000 or year_int > 2099:
+                    logger.warning(f"CUHK year out of reasonable range: {year_int}")
+                    continue
+
+                # Validate rank format and range
+                rank_int = int(rank)
+                if rank_int < 1 or rank_int > 1000:
+                    logger.warning(f"CUHK rank out of reasonable range: {rank_int}")
+                    continue
+
+                # Store validated data
+                validated_data["cuhk_rankings"][year_str] = rank_int
+                logger.debug(f"✅ Validated CUHK ranking: {year_str} -> #{rank_int}")
+
+            except (ValueError, TypeError) as e:
+                logger.warning(f"Invalid CUHK ranking data - year: {year}, rank: {rank}, error: {e}")
+                continue
+
+        # Validate HKUST rankings
+        for year, rank in ranking_data.get("hkust_rankings", {}).items():
+            try:
+                # Convert year to string if it's not already
+                year_str = str(year)
+
+                # Validate year format and range
+                if not year_str.startswith("20") or len(year_str) != 4:
+                    logger.warning(f"Invalid HKUST year format: {year_str}")
+                    continue
+
+                year_int = int(year_str)
+                if year_int < 2000 or year_int > 2099:
+                    logger.warning(f"HKUST year out of reasonable range: {year_int}")
+                    continue
+
+                # Validate rank format and range
+                rank_int = int(rank)
+                if rank_int < 1 or rank_int > 1000:
+                    logger.warning(f"HKUST rank out of reasonable range: {rank_int}")
+                    continue
+
+                # Store validated data
+                validated_data["hkust_rankings"][year_str] = rank_int
+                logger.debug(f"✅ Validated HKUST ranking: {year_str} -> #{rank_int}")
+
+            except (ValueError, TypeError) as e:
+                logger.warning(f"Invalid HKUST ranking data - year: {year}, rank: {rank}, error: {e}")
+                continue
+
+        # Sort rankings by year for consistent output
+        validated_data["cuhk_rankings"] = dict(sorted(validated_data["cuhk_rankings"].items()))
+        validated_data["hkust_rankings"] = dict(sorted(validated_data["hkust_rankings"].items()))
+
+        logger.info(f"✅ Data validation completed. Valid CUHK: {len(validated_data['cuhk_rankings'])} entries, Valid HKUST: {len(validated_data['hkust_rankings'])} entries")
+        return validated_data
 
     def _apply_rerank(
         self,
@@ -676,10 +932,17 @@ class SearchRAG:
         is_ranking_query = any(keyword in query.lower() for keyword in ['排名', 'ranking', 'rank'])
         ranking_data = None
         if is_ranking_query:
-            print("🔍 检测到排名查询，提取排名数据...")
+            logger.info("🔍 检测到排名查询，提取排名数据...")
             ranking_data = self._extract_ranking_data(hits)
-            print(f"✅ 提取到CUHK排名数据: {ranking_data['cuhk_rankings']}")
-            print(f"✅ 提取到HKUST排名数据: {ranking_data['hkust_rankings']}")
+
+            # Validate and integrate the extracted ranking data
+            validated_ranking_data = self._validate_and_integrate_ranking_data(ranking_data)
+
+            logger.info(f"✅ 提取到CUHK排名数据: {validated_ranking_data['cuhk_rankings']}")
+            logger.info(f"✅ 提取到HKUST排名数据: {validated_ranking_data['hkust_rankings']}")
+
+            # Use validated data instead of raw extracted data
+            ranking_data = validated_ranking_data
         
         # 检索本地文档
         retrieved_docs: List[Document] = []
