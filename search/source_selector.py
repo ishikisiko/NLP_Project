@@ -4,6 +4,7 @@ import sys
 import re
 import time
 from typing import Dict, List, Tuple, Any, Optional
+from datetime import datetime, timedelta
 
 import requests
 
@@ -532,12 +533,11 @@ class IntelligentSourceSelector:
         domain: str,
         timing_recorder: Optional[TimingRecorder] = None,
     ) -> Optional[Dict[str, Any]]:
-        """调用特定领域的Google Cloud API并返回结构化结果"""
         domain = (domain or "").lower().strip()
         if domain not in {"weather", "transportation", "finance", "sports", "location"}:
             return None
 
-        if not self.google_api_key:
+        if domain in {"weather", "transportation", "location"} and not self.google_api_key:
             return {"handled": True, "error": "missing_google_api_key"}
 
         if domain == "weather":
@@ -724,8 +724,9 @@ class IntelligentSourceSelector:
         is_history = any(kw in query_lower for kw in history_keywords)
         is_reasoning = any(kw in query_lower for kw in reasoning_keywords)
 
-        # Regex to extract time period if present (e.g. "5 days", "2年", "十年")
         period = "1d"
+        start_date = None
+        end_date = None
         
         # Check for years first (e.g. "2年", "3 years", "十年")
         match_years = re.search(r'(十|(\d+))\s*(?:年|years?)', query_lower)
@@ -736,6 +737,8 @@ class IntelligentSourceSelector:
             else:
                 years = int(match_years.group(2))
             
+            end_date = datetime.now().date().isoformat()
+            start_date = (datetime.now() - timedelta(days=years * 365)).date().isoformat()
             # Map years to yfinance valid periods
             if years <= 1:
                 period = "1y"
@@ -772,7 +775,7 @@ class IntelligentSourceSelector:
         results = []
         for symbol in symbols:
             if is_history:
-                quote = self._query_stock_history(symbol, period, timing_recorder=timing_recorder)
+                quote = self._query_stock_history(symbol, period, start=start_date, end=end_date, timing_recorder=timing_recorder)
             else:
                 quote = self._query_stock_price(symbol, timing_recorder=timing_recorder)
             
@@ -1301,8 +1304,7 @@ class IntelligentSourceSelector:
         
         return events
 
-    def _query_stock_history(self, symbol: str, period: str, timing_recorder: Optional[TimingRecorder] = None) -> Dict[str, Any]:
-        """Fetch historical data using yfinance with technical indicators."""
+    def _query_stock_history(self, symbol: str, period: str, start: Optional[str] = None, end: Optional[str] = None, timing_recorder: Optional[TimingRecorder] = None) -> Dict[str, Any]:
         start = time.perf_counter()
         try:
             # Ensure yfinance is available
@@ -1310,10 +1312,19 @@ class IntelligentSourceSelector:
             import numpy as np
             
             ticker = yf.Ticker(symbol)
-            # Fetch history
-            df = ticker.history(period=period)
+            if start and end:
+                df = ticker.history(start=start, end=end, interval="1d")
+            else:
+                df = ticker.history(period=period)
             if df.empty:
-                return {"error": "no_history_data"}
+                try:
+                    df2 = stock_info.get_data(symbol, start_date=start, end_date=end)
+                    if df2 is not None and not df2.empty:
+                        df = df2.rename(columns={"close": "Close", "high": "High", "low": "Low", "volume": "Volume"})
+                    else:
+                        return {"error": "no_history_data"}
+                except Exception:
+                    return {"error": "no_history_data"}
             
             # Calculate basic stats
             # Start/End close
@@ -1358,6 +1369,11 @@ class IntelligentSourceSelector:
                             year_end = group.iloc[-1]['Close']
                             year_return = ((year_end - year_start) / year_start) * 100
                             yearly_returns.append({"year": year, "return": year_return})
+                yearly_closes = []
+                df_years_all = df.groupby(df.index.year)
+                for year, group in df_years_all:
+                    yc = group.iloc[-1]['Close']
+                    yearly_closes.append({"year": year, "close": yc})
                 
                 # 5. Trend analysis
                 trend_direction = "横盘"
@@ -1407,6 +1423,7 @@ class IntelligentSourceSelector:
                     "momentum": momentum,
                     "momentum_desc": momentum_desc,
                     "yearly_returns": yearly_returns,
+                    "yearly_closes": yearly_closes,
                     "daily_data": [
                         {"date": str(idx.date()), "close": row['Close'], "volume": row['Volume']}
                         for idx, row in df.iterrows()
@@ -1512,6 +1529,12 @@ class IntelligentSourceSelector:
                     for yr in yearly_returns:
                         yr_sign = "+" if yr["return"] >= 0 else ""
                         analysis_parts.append(f"     {yr['year']}年: {yr_sign}{yr['return']:.2f}%")
+                yearly_closes = res.get("yearly_closes", [])
+                if yearly_closes:
+                    last_three = yearly_closes[-3:] if len(yearly_closes) > 3 else yearly_closes
+                    analysis_parts.append("\n   - 最近三年关键数值:")
+                    for yc in last_three:
+                        analysis_parts.append(f"     {yc['year']}年年末收盘: {yc['close']:.2f}")
                 
                 # Key insights summary
                 insights = []
