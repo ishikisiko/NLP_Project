@@ -9,6 +9,8 @@ from __future__ import annotations
 import os
 import sys
 import time
+import logging
+import re
 from dataclasses import asdict
 from typing import Any, Dict, Iterator, List, Optional, Union
 
@@ -29,8 +31,10 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from langchain.langchain_support import Document, FileReader, LangChainVectorStore
 from langchain.langchain_tools import SearchRetriever, WebSearchTool
-from search.search import SearchClient, SearchHit
+from search.search import SearchClient, SearchHit, GoogleSearchClient
 from utils.timing_utils import TimingRecorder
+
+logger = logging.getLogger(__name__)
 
 
 # Default prompts
@@ -301,6 +305,178 @@ class SearchRAGChain:
             return (filtered or hits, metadata)
         except Exception as exc:
             return hits, [{"error": str(exc)}]
+
+    def _is_temporal_change_query(self, query: str) -> bool:
+        """Check if query is related to temporal changes."""
+        temporal_change_keywords = [
+            "大学", "高校", "学院", "学校", "排名", "QS", "THE", "ARWU", "US News",
+            "university", "college", "ranking", "rankings", "education", "higher education",
+            "香港中文大學", "香港科技大學", "香港大學", "CUHK", "HKUST", "HKU",
+            "香港中文大学", "香港科技大学", "香港大学",
+            "最近10年", "过去10年", "10年", "十年", "历年", "历史", "变化", "趋势", "发展",
+            "10 years", "decade", "historical", "trend", "development", "evolution",
+            "对比", "比较", "变化趋势", "时间序列", "年度", "逐年",
+            "comparison", "compare", "trend over time", "time series", "yearly", "year by year",
+            "增长", "下降", "波动", "变化率", "增长率", "涨跌",
+            "growth", "decline", "fluctuation", "rate of change", "growth rate", "rise and fall"
+        ]
+        query_lower = query.lower()
+        return any(keyword in query_lower for keyword in temporal_change_keywords)
+
+    def _check_google_client_availability(self) -> Optional[Any]:
+        """Check availability of Google search client."""
+        # Check if search_client is CombinedSearchClient with clients
+        if hasattr(self.search_client, "clients"):
+            for client in self.search_client.clients:
+                if hasattr(client, "source_id") and client.source_id == "google":
+                    return client
+        
+        # Check if search_client itself is a GoogleSearchClient
+        if hasattr(self.search_client, "source_id") and self.search_client.source_id == "google":
+            return self.search_client
+            
+        return None
+
+    def _extract_years_from_hits(self, hits: List[SearchHit]) -> Set[str]:
+        """Extract years found in search hits."""
+        if not hits:
+            return set()
+            
+        # Check both snippets and titles
+        combined_text = " ".join(f"{hit.title} {hit.snippet}" for hit in hits).lower()
+        year_pattern = r'\b(20\d{2})\b'
+        years_found = set(re.findall(year_pattern, combined_text))
+        return years_found
+
+    def _detect_missing_years(self, query: str, hits: List[SearchHit]) -> List[str]:
+        """Detect which years from the last 10 years are missing in the search results."""
+        query_lower = query.lower()
+        time_keywords = ["最近10年", "过去10年", "10年", "十年", "10 years", "decade", "历年", "历史", "变化", "趋势"]
+        is_time_query = any(kw in query_lower for kw in time_keywords)
+        
+        if not is_time_query:
+            return []
+            
+        # Define target years (last 10 years)
+        current_year = 2026 # Using 2026 as current context based on user query example, or just use current date
+        # Better to use system time or just a fixed window around current year. 
+        # The user's example showed 2026 data, so let's ensure we cover up to that if possible, 
+        # but for "last 10 years" usually means [current_year-10, current_year].
+        # Let's use a dynamic window.
+        import datetime
+        now_year = datetime.datetime.now().year
+        # If we see future years in results, we might want to include them, but for "missing" detection
+        # we usually care about history.
+        # Let's target [now_year - 9, now_year].
+        # However, the user specifically mentioned 2026 in the prompt example as "future/current".
+        # Let's stick to a standard decade window.
+        target_years = {str(y) for y in range(now_year - 9, now_year + 1)}
+        
+        found_years = self._extract_years_from_hits(hits)
+        
+        # If we found very few years, we definitely need to search.
+        if len(found_years.intersection(target_years)) < 3:
+             # If almost nothing found, return all target years (sorted)
+             return sorted(list(target_years), reverse=True)
+
+        # Calculate missing years
+        missing = target_years - found_years
+        
+        # If we are missing more than a few years, return them
+        if missing:
+            return sorted(list(missing), reverse=True)
+            
+        return []
+
+    def _perform_granular_search_fallback(
+        self, 
+        original_query: str, 
+        effective_query: str, 
+        num_search_results: int, 
+        per_source_cap: int,
+        freshness: Optional[str],
+        date_restrict: Optional[str],
+        timing_recorder: Optional[TimingRecorder],
+        missing_years: Optional[List[str]] = None
+    ) -> List[SearchHit]:
+        """Perform granular search for historical data."""
+        
+        granular_hits = []
+        google_client = self._check_google_client_availability()
+        active_client = google_client if google_client else self.search_client
+        
+        # Determine years to search
+        if missing_years:
+            selected_years = missing_years
+            # If too many missing years (e.g. > 8), we might want to cap it to avoid excessive API calls
+            # But for "last 10 years", usually at most 10.
+            # Let's cap at 8 to be safe, prioritizing recent ones.
+            if len(selected_years) > 8:
+                selected_years = selected_years[:8]
+        else:
+            # Fallback to default sampling if no missing_years provided
+            import datetime
+            current_year = datetime.datetime.now().year
+            years = [str(year) for year in range(current_year - 9, current_year + 1)]
+            if len(years) > 6:
+                step = max(1, len(years) // 5)
+                selected_years = [years[i] for i in range(0, len(years), step)]
+                if years[-1] not in selected_years:
+                    selected_years.append(years[-1])
+            else:
+                selected_years = years
+
+        logger.info(f"Granular search targeting years: {selected_years}")
+        
+        for year in selected_years:
+            query_lower = original_query.lower()
+            universities = []
+            if "香港中文大學" in original_query or "香港中文大学" in original_query or "cuhk" in query_lower:
+                universities.extend(["Chinese University of Hong Kong", "CUHK"])
+            if "香港科技大學" in original_query or "香港科技大学" in original_query or "hkust" in query_lower:
+                universities.extend(["Hong Kong University of Science and Technology", "HKUST"])
+            
+            year_query = f"{original_query} {year}"
+            
+            if "qs" in query_lower and ("排名" in original_query or "ranking" in query_lower):
+                if universities:
+                    for uni in universities:
+                        year_query = f"QS world university rankings {year} {uni}"
+                        try:
+                            search_kwargs = {
+                                "num_results": max(2, num_search_results // (len(selected_years) * len(universities))),
+                                "freshness": None, # Ignore freshness for historical search
+                                "date_restrict": None, # Ignore date_restrict for historical search
+                            }
+                            if google_client:
+                                pass
+                            
+                            year_hits = active_client.search(year_query, **search_kwargs)
+                            granular_hits.extend(year_hits)
+                            time.sleep(1)  # Avoid rate limits
+                        except Exception as e:
+                            logger.warning(f"Year {year} search failed: {e}")
+                    continue
+                else:
+                    year_query = f"QS world university rankings {year}"
+            
+            try:
+                search_kwargs = {
+                    "num_results": max(3, num_search_results // len(selected_years)),
+                    "freshness": None, # Ignore freshness for historical search
+                    "date_restrict": None, # Ignore date_restrict for historical search
+                }
+                if google_client:
+                    pass
+                    
+                year_hits = active_client.search(year_query, **search_kwargs)
+                logger.info(f"Year {year} search found {len(year_hits)} hits.")
+                granular_hits.extend(year_hits)
+                time.sleep(1)  # Avoid rate limits
+            except Exception as e:
+                logger.warning(f"Year {year} search failed: {e}")
+                
+        return granular_hits
     
     def answer(
         self,
@@ -319,6 +495,7 @@ class SearchRAGChain:
         date_restrict: Optional[str] = None,
         timing_recorder: Optional[TimingRecorder] = None,
         images: Optional[List[Dict[str, str]]] = None,
+        extra_context: Optional[str] = None,
     ) -> Dict[str, Any]:
         """Answer a query using search + local docs RAG pipeline."""
         
@@ -342,6 +519,18 @@ class SearchRAGChain:
                     freshness=freshness,
                     date_restrict=date_restrict,
                 )
+                
+                # Check for granular search fallback
+                if self._is_temporal_change_query(query):
+                    missing_years = self._detect_missing_years(query, hits)
+                    if missing_years:
+                        logger.info(f"Insufficient historical data found (missing: {missing_years}), performing granular search fallback.")
+                        granular_hits = self._perform_granular_search_fallback(
+                            query, effective_query, num_search_results, per_source_cap,
+                            freshness, date_restrict, timing_recorder, missing_years=missing_years
+                        )
+                        # Merge hits
+                        hits.extend(granular_hits)
             except Exception as exc:
                 hits = []
                 search_error = str(exc)
@@ -377,6 +566,10 @@ class SearchRAGChain:
             prompt_parts.append(f"Web Search Results:\n{search_context}\n\n")
         if local_context:
             prompt_parts.append(f"Local Documents:\n{local_context}\n\n")
+        
+        if extra_context:
+            prompt_parts.append(f"Additional Context (Domain Data):\n{extra_context}\n\n")
+            
         prompt_parts.append(
             "Based on the above information, please answer the question. "
             "If information is insufficient, acknowledge it."

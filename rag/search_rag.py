@@ -178,7 +178,18 @@ class SearchRAG:
         # 检查是否包含多个年份的数据
         year_pattern = r'\b(20\d{2})\b'
         years_found = re.findall(year_pattern, combined_snippets)
-        has_multiple_years = len(set(years_found)) >= 3  # 至少3个不同年份的数据
+        unique_years = set(years_found)
+        has_multiple_years = len(unique_years) >= 3  # 至少3个不同年份的数据
+        
+        # 如果是时间查询，必须要有多个年份的数据，或者虽然年份不多但有明确的排名趋势描述
+        # 之前的逻辑是 (has_year_rank_data or has_multiple_years)，这意味着只要有一个年份的排名数据就跳过颗粒化搜索
+        # 这对于"近十年变化"的查询是不够的
+        
+        if is_time_query:
+            # 对于时间查询，如果没有足够多的年份数据，就应该进行颗粒化搜索
+            if not has_multiple_years:
+                logger.info(f"Time query detected but only found {len(unique_years)} years. Triggering granular search.")
+                return True
         
         # 如果没有足够的时间变化数据，则需要fallback
         return not (has_year_rank_data or has_multiple_years)
@@ -289,178 +300,182 @@ class SearchRAG:
             granular_search_start = time.perf_counter()
             granular_hits = []
 
-            # 使用增强的Google客户端可用性检查
+            # 尝试获取Google客户端，但如果不可用，使用通用搜索客户端
             google_client = self._check_google_client_availability()
-
-            if not google_client:
-                logger.warning("⚠️ No Google search client available, cannot perform granular search")
-                return broad_hits
+            active_client = google_client if google_client else self.search_client
+            client_name = "Google" if google_client else "Generic"
+            
+            logger.info(f"Using {client_name} search client for granular search")
 
             # Add performance monitoring for granular search
             if timing_recorder:
                 timing_recorder.start_operation("granular_search")
             
-            if google_client:
-                # 优化颗粒化查询：智能选择关键年份
-                selected_years = years
-                if len(years) > 6:
-                    # 智能选择策略：选择开始年份、结束年份和中间的几个关键年份
-                    # 对于10年查询，选择第1年、第3年、第5年、第7年、第10年
-                    if len(years) == 10:
-                        selected_years = [years[0], years[2], years[4], years[6], years[-1]]
-                    else:
-                        # 对于其他长度的年份列表，均匀分布选择
-                        step = max(1, len(years) // 5)
-                        selected_years = [years[i] for i in range(0, len(years), step)]
-                        if years[-1] not in selected_years:
-                            selected_years.append(years[-1])
-                    
-                    print(f"📅 优化颗粒化搜索，选择关键年份: {selected_years}")
+            # 优化颗粒化查询：智能选择关键年份
+            selected_years = years
+            if len(years) > 6:
+                # 智能选择策略：选择开始年份、结束年份和中间的几个关键年份
+                # 对于10年查询，选择第1年、第3年、第5年、第7年、第10年
+                if len(years) == 10:
+                    selected_years = [years[0], years[2], years[4], years[6], years[-1]]
                 else:
-                    print(f"📅 执行颗粒化搜索，年份: {selected_years}")
+                    # 对于其他长度的年份列表，均匀分布选择
+                    step = max(1, len(years) // 5)
+                    selected_years = [years[i] for i in range(0, len(years), step)]
+                    if years[-1] not in selected_years:
+                        selected_years.append(years[-1])
                 
-                # 为每个选定的年份生成查询
-                for year in selected_years:
-                    # 智能生成更精确的年份查询
-                    query_lower = original_query.lower()
-                    
-                    # 提取查询中的关键实体（大学名称等）
-                    import re
-                    # 提取大学名称
-                    universities = []
-                    if "香港中文大學" in original_query or "香港中文大学" in original_query:
-                        universities.append("Chinese University of Hong Kong")
-                        universities.append("CUHK")
-                    if "香港科技大學" in original_query or "香港科技大学" in original_query:
-                        universities.append("Hong Kong University of Science and Technology")
-                        universities.append("HKUST")
-                    
-                    # 根据查询类型生成不同的年份查询
-                    if "qs" in query_lower and ("排名" in original_query or "ranking" in query_lower):
-                        # QS排名查询 - 生成更简洁的查询
-                        if universities:
-                            # 如果有具体的大学，查询这些大学的QS排名
-                            for uni in universities:
-                                year_query = f"QS world university rankings {year} {uni}"
-                                print(f"🔍 搜索年份 {year}: {year_query}")
-                                try:
-                                    year_hits = google_client.search(
-                                        year_query,
-                                        num_results=max(2, num_search_results // (len(selected_years) * len(universities))),
-                                        freshness=freshness,
-                                        date_restrict=f"{year}-01-01..{year}-12-31",  # 限制在特定年份内
-                                    )
-                                    granular_hits.extend(year_hits)
-                                except Exception as e:
-                                    print(f"年份 {year} 搜索失败: {e}")
-                            
-                            # 额外查询：香港大学QS排名（作为参考）
-                            hk_query = f"QS world university rankings {year} Hong Kong universities ranking"
-                            print(f"🔍 搜索年份 {year} (香港大学排名): {hk_query}")
-                            try:
-                                hk_hits = google_client.search(
-                                    hk_query,
-                                    num_results=2,
-                                    freshness=freshness,
-                                    date_restrict=f"{year}-01-01..{year}-12-31",  # 限制在特定年份内
-                                )
-                                granular_hits.extend(hk_hits)
-                            except Exception as e:
-                                print(f"年份 {year} 香港大学排名搜索失败: {e}")
-                        else:
-                            # 如果没有具体大学，查询QS排名总体情况
-                            year_query = f"QS world university rankings {year}"
+                print(f"📅 优化颗粒化搜索，选择关键年份: {selected_years}")
+            else:
+                print(f"📅 执行颗粒化搜索，年份: {selected_years}")
+            
+            # 为每个选定的年份生成查询
+            for year in selected_years:
+                # 智能生成更精确的年份查询
+                query_lower = original_query.lower()
+                
+                # 提取查询中的关键实体（大学名称等）
+                import re
+                # 提取大学名称
+                universities = []
+                if "香港中文大學" in original_query or "香港中文大学" in original_query:
+                    universities.append("Chinese University of Hong Kong")
+                    universities.append("CUHK")
+                if "香港科技大學" in original_query or "香港科技大学" in original_query:
+                    universities.append("Hong Kong University of Science and Technology")
+                    universities.append("HKUST")
+                
+                # 根据查询类型生成不同的年份查询
+                if "qs" in query_lower and ("排名" in original_query or "ranking" in query_lower):
+                    # QS排名查询 - 生成更简洁的查询
+                    if universities:
+                        # 如果有具体的大学，查询这些大学的QS排名
+                        for uni in universities:
+                            year_query = f"QS world university rankings {year} {uni}"
                             print(f"🔍 搜索年份 {year}: {year_query}")
                             try:
-                                year_hits = google_client.search(
-                                    year_query,
-                                    num_results=max(3, num_search_results // len(selected_years)),
-                                    freshness=freshness,
-                                    date_restrict=f"{year}-01-01..{year}-12-31",  # 限制在特定年份内
-                                )
+                                # 构建搜索参数
+                                search_kwargs = {
+                                    "num_results": max(2, num_search_results // (len(selected_years) * len(universities))),
+                                    "freshness": freshness,
+                                }
+                                # 只有Google客户端支持date_restrict
+                                if google_client:
+                                    search_kwargs["date_restrict"] = f"{year}-01-01..{year}-12-31"
+                                
+                                year_hits = active_client.search(year_query, **search_kwargs)
                                 granular_hits.extend(year_hits)
                             except Exception as e:
                                 print(f"年份 {year} 搜索失败: {e}")
-                        continue  # 跳过后续的通用查询逻辑
-                    elif "the" in query_lower and ("排名" in original_query or "ranking" in query_lower):
-                        # THE排名查询
-                        year_query = f"THE world university rankings {year}"
-                    elif "arwu" in query_lower or "软科" in original_query:
-                        # ARWU排名查询
-                        year_query = f"ARWU academic ranking of world universities {year}"
-                    elif "排名" in original_query or "ranking" in query_lower:
-                        # 通用排名查询
-                        year_query = f"university rankings {year}"
-                    elif "大学" in original_query or "university" in query_lower:
-                        # 大学相关查询
-                        year_query = f"university {year}"
+                        
+                        # 额外查询：香港大学QS排名（作为参考）
+                        hk_query = f"QS world university rankings {year} Hong Kong universities ranking"
+                        print(f"🔍 搜索年份 {year} (香港大学排名): {hk_query}")
+                        try:
+                            search_kwargs = {
+                                "num_results": 2,
+                                "freshness": freshness,
+                            }
+                            if google_client:
+                                search_kwargs["date_restrict"] = f"{year}-01-01..{year}-12-31"
+                                
+                            hk_hits = active_client.search(hk_query, **search_kwargs)
+                            granular_hits.extend(hk_hits)
+                        except Exception as e:
+                            print(f"年份 {year} 香港大学排名搜索失败: {e}")
                     else:
-                        # 通用查询
-                        year_query = f"{original_query} {year}"
-                    
-                    print(f"🔍 搜索年份 {year}: {year_query}")
-                    
-                    try:
-                        year_hits = google_client.search(
-                            year_query,
-                            num_results=max(3, num_search_results // len(selected_years)),
-                            freshness=freshness,
-                            date_restrict=f"{year}-01-01..{year}-12-31",  # 限制在特定年份内
-                        )
-                        granular_hits.extend(year_hits)
-                        logger.debug(f"✅ Successfully searched year {year}, got {len(year_hits)} results")
-                    except Exception as e:
-                        logger.error(f"❌ Year {year} search failed: {e}")
-                        logger.debug(f"   Query: {year_query}")
-                        if timing_recorder:
-                            timing_recorder.record_error(f"granular_search_year_{year}", str(e))
+                        # 如果没有具体大学，查询QS排名总体情况
+                        year_query = f"QS world university rankings {year}"
+                        print(f"🔍 搜索年份 {year}: {year_query}")
+                        try:
+                            search_kwargs = {
+                                "num_results": max(3, num_search_results // len(selected_years)),
+                                "freshness": freshness,
+                            }
+                            if google_client:
+                                search_kwargs["date_restrict"] = f"{year}-01-01..{year}-12-31"
+                                
+                            year_hits = active_client.search(year_query, **search_kwargs)
+                            granular_hits.extend(year_hits)
+                        except Exception as e:
+                            print(f"年份 {year} 搜索失败: {e}")
+                    continue  # 跳过后续的通用查询逻辑
+                elif "the" in query_lower and ("排名" in original_query or "ranking" in query_lower):
+                    # THE排名查询
+                    year_query = f"THE world university rankings {year}"
+                elif "arwu" in query_lower or "软科" in original_query:
+                    # ARWU排名查询
+                    year_query = f"ARWU academic ranking of world universities {year}"
+                elif "排名" in original_query or "ranking" in query_lower:
+                    # 通用排名查询
+                    year_query = f"university rankings {year}"
+                elif "大学" in original_query or "university" in query_lower:
+                    # 大学相关查询
+                    year_query = f"university {year}"
+                else:
+                    # 通用查询
+                    year_query = f"{original_query} {year}"
                 
-                # 合并宽泛搜索和颗粒化搜索结果，优先保留颗粒化搜索结果
-                all_hits = granular_hits + broad_hits
+                print(f"🔍 搜索年份 {year}: {year_query}")
                 
-                # 智能去重：保留更相关的结果
-                seen_urls = set()
-                deduped_hits = []
-                for hit in all_hits:
-                    url_key = hit.url or ""
-                    if url_key not in seen_urls:
-                        seen_urls.add(url_key)
-                        deduped_hits.append(hit)
-                
-                # 按相关性排序：优先包含年份和排名信息的结果
-                def hit_relevance_score(hit):
-                    score = 0
-                    if hit.snippet:
-                        snippet = hit.snippet.lower()
-                        # 检查是否包含年份
-                        import re
-                        years_in_snippet = re.findall(r'\b(20\d{2})\b', snippet)
-                        score += len(years_in_snippet) * 2
-                        # 检查是否包含排名信息
-                        rank_keywords = ['rank', '排名', 'position', '#', 'top']
-                        score += sum(1 for kw in rank_keywords if kw in snippet)
-                    return score
-                
-                deduped_hits.sort(key=hit_relevance_score, reverse=True)
+                try:
+                    search_kwargs = {
+                        "num_results": max(3, num_search_results // len(selected_years)),
+                        "freshness": freshness,
+                    }
+                    if google_client:
+                        search_kwargs["date_restrict"] = f"{year}-01-01..{year}-12-31"
+                        
+                    year_hits = active_client.search(year_query, **search_kwargs)
+                    granular_hits.extend(year_hits)
+                    logger.debug(f"✅ Successfully searched year {year}, got {len(year_hits)} results")
+                except Exception as e:
+                    logger.error(f"❌ Year {year} search failed: {e}")
+                    logger.debug(f"   Query: {year_query}")
+                    if timing_recorder:
+                        timing_recorder.record_error(f"granular_search_year_{year}", str(e))
+            
+            # 合并宽泛搜索和颗粒化搜索结果，优先保留颗粒化搜索结果
+            all_hits = granular_hits + broad_hits
+            
+            # 智能去重：保留更相关的结果
+            seen_urls = set()
+            deduped_hits = []
+            for hit in all_hits:
+                url_key = hit.url or ""
+                if url_key not in seen_urls:
+                    seen_urls.add(url_key)
+                    deduped_hits.append(hit)
+            
+            # 按相关性排序：优先包含年份和排名信息的结果
+            def hit_relevance_score(hit):
+                score = 0
+                if hit.snippet:
+                    snippet = hit.snippet.lower()
+                    # 检查是否包含年份
+                    import re
+                    years_in_snippet = re.findall(r'\b(20\d{2})\b', snippet)
+                    score += len(years_in_snippet) * 2
+                    # 检查是否包含排名信息
+                    rank_keywords = ['rank', '排名', 'position', '#', 'top']
+                    score += sum(1 for kw in rank_keywords if kw in snippet)
+                return score
+            
+            deduped_hits.sort(key=hit_relevance_score, reverse=True)
 
-                # Record granular search performance
-                granular_search_duration = (time.perf_counter() - granular_search_start) * 1000
-                logger.info(f"✅ Granular search completed in {granular_search_duration:.2f}ms, obtained {len(deduped_hits)} results")
+            # Record granular search performance
+            granular_search_duration = (time.perf_counter() - granular_search_start) * 1000
+            logger.info(f"✅ Granular search completed in {granular_search_duration:.2f}ms, obtained {len(deduped_hits)} results")
 
-                if timing_recorder:
-                   timing_recorder.end_operation("granular_search", {
-                       "duration_ms": granular_search_duration,
-                       "results_count": len(deduped_hits),
-                       "years_queried": len(selected_years),
-                       "google_client_available": google_client is not None
-                   })
+            if timing_recorder:
+                timing_recorder.end_operation("granular_search", {
+                    "duration_ms": granular_search_duration,
+                    "results_count": len(deduped_hits),
+                    "years_queried": len(selected_years),
+                    "google_client_available": google_client is not None
+                })
 
-                return deduped_hits[:num_search_results * 2]  # 返回更多结果以便筛选
-            else:
-                logger.warning("⚠️ No Google search client available, cannot perform granular search")
-                if timing_recorder:
-                   timing_recorder.record_error("granular_search", "No Google client available")
-                return broad_hits
+            return deduped_hits[:num_search_results * 2]  # 返回更多结果以便筛选
         else:
             logger.info("No years specified for granular search")
             return broad_hits

@@ -566,6 +566,7 @@ Always answer in the same language as the user's question."""
             date_restrict=time_constraint.google_date_restrict if time_constraint.days else None,
             reference_limit=reference_limit,
             timing_recorder=timing_recorder,
+            extra_context=domain_api_result.get("answer") if domain_api_result and should_continue else None,
         )
         
         # Add control metadata
