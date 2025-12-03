@@ -33,6 +33,12 @@ from langchain.langchain_support import Document, FileReader, LangChainVectorSto
 from langchain.langchain_tools import SearchRetriever, WebSearchTool
 from search.search import SearchClient, SearchHit, GoogleSearchClient
 from utils.timing_utils import TimingRecorder
+from utils.query_config import (
+    TEMPORAL_CHANGE_KEYWORDS,
+    TIME_RANGE_CONFIG,
+    QUERY_SIMPLIFICATION_PROMPT,
+    DEFAULT_CONFIG
+)
 
 logger = logging.getLogger(__name__)
 
@@ -308,20 +314,8 @@ class SearchRAGChain:
 
     def _is_temporal_change_query(self, query: str) -> bool:
         """Check if query is related to temporal changes."""
-        temporal_change_keywords = [
-            "大学", "高校", "学院", "学校", "排名", "QS", "THE", "ARWU", "US News",
-            "university", "college", "ranking", "rankings", "education", "higher education",
-            "香港中文大學", "香港科技大學", "香港大學", "CUHK", "HKUST", "HKU",
-            "香港中文大学", "香港科技大学", "香港大学",
-            "最近10年", "过去10年", "10年", "十年", "历年", "历史", "变化", "趋势", "发展",
-            "10 years", "decade", "historical", "trend", "development", "evolution",
-            "对比", "比较", "变化趋势", "时间序列", "年度", "逐年",
-            "comparison", "compare", "trend over time", "time series", "yearly", "year by year",
-            "增长", "下降", "波动", "变化率", "增长率", "涨跌",
-            "growth", "decline", "fluctuation", "rate of change", "growth rate", "rise and fall"
-        ]
         query_lower = query.lower()
-        return any(keyword in query_lower for keyword in temporal_change_keywords)
+        return any(keyword in query_lower for keyword in TEMPORAL_CHANGE_KEYWORDS)
 
     def _check_google_client_availability(self) -> Optional[Any]:
         """Check availability of Google search client."""
@@ -349,34 +343,38 @@ class SearchRAGChain:
         return years_found
 
     def _detect_missing_years(self, query: str, hits: List[SearchHit]) -> List[str]:
-        """Detect which years from the last 10 years are missing in the search results."""
+        """Detect which years from the specified time range are missing in the search results."""
         query_lower = query.lower()
-        time_keywords = ["最近10年", "过去10年", "10年", "十年", "10 years", "decade", "历年", "历史", "变化", "趋势"]
-        is_time_query = any(kw in query_lower for kw in time_keywords)
+        
+        # Check if this is a time-based query
+        is_time_query = False
+        time_range_years = DEFAULT_CONFIG["max_granular_search_years"]
+        coverage_threshold = DEFAULT_CONFIG["default_coverage_threshold"]
+        
+        # Check for specific time ranges
+        for range_name, config in TIME_RANGE_CONFIG.items():
+            if any(k in query_lower for k in config["keywords"]):
+                is_time_query = True
+                time_range_years = config["years"]
+                coverage_threshold = config["coverage_threshold"]
+                break
+        
+        # Also check if it's a temporal change query
+        if not is_time_query and self._is_temporal_change_query(query):
+            is_time_query = True
         
         if not is_time_query:
             return []
             
-        # Define target years (last 10 years)
-        current_year = 2026 # Using 2026 as current context based on user query example, or just use current date
-        # Better to use system time or just a fixed window around current year. 
-        # The user's example showed 2026 data, so let's ensure we cover up to that if possible, 
-        # but for "last 10 years" usually means [current_year-10, current_year].
-        # Let's use a dynamic window.
         import datetime
         now_year = datetime.datetime.now().year
-        # If we see future years in results, we might want to include them, but for "missing" detection
-        # we usually care about history.
-        # Let's target [now_year - 9, now_year].
-        # However, the user specifically mentioned 2026 in the prompt example as "future/current".
-        # Let's stick to a standard decade window.
-        target_years = {str(y) for y in range(now_year - 9, now_year + 1)}
+        start_year = now_year - time_range_years + 1
+        target_years = {str(y) for y in range(start_year, now_year + 1)}
         
         found_years = self._extract_years_from_hits(hits)
         
-        # If we found very few years, we definitely need to search.
-        if len(found_years.intersection(target_years)) < 3:
-             # If almost nothing found, return all target years (sorted)
+        # Check if we have sufficient coverage
+        if len(found_years.intersection(target_years)) / len(target_years) < coverage_threshold:
              return sorted(list(target_years), reverse=True)
 
         # Calculate missing years
@@ -428,6 +426,24 @@ class SearchRAGChain:
 
         logger.info(f"Granular search targeting years: {selected_years}")
         
+        # Prepare base query
+        base_query = effective_query if effective_query and len(effective_query) < len(original_query) * 1.5 else original_query
+        
+        # If base_query is too long/complex (likely a full sentence), simplify it using LLM
+        if len(base_query) > DEFAULT_CONFIG["max_query_length_for_simplification"]:
+            try:
+                prompt = QUERY_SIMPLIFICATION_PROMPT.format(query=base_query)
+                # Simple invocation to get keywords
+                from langchain_core.messages import HumanMessage
+                response = self.llm.invoke([HumanMessage(content=prompt)])
+                content = response.content if hasattr(response, 'content') else str(response)
+                cleaned_keywords = content.strip().replace('"', '').replace("'", "")
+                if cleaned_keywords and len(cleaned_keywords) < len(base_query):
+                    logger.info(f"Simplified query for granular search: '{base_query}' -> '{cleaned_keywords}'")
+                    base_query = cleaned_keywords
+            except Exception as e:
+                logger.warning(f"Failed to simplify query for granular search: {e}")
+
         for year in selected_years:
             query_lower = original_query.lower()
             universities = []
@@ -436,7 +452,7 @@ class SearchRAGChain:
             if "香港科技大學" in original_query or "香港科技大学" in original_query or "hkust" in query_lower:
                 universities.extend(["Hong Kong University of Science and Technology", "HKUST"])
             
-            year_query = f"{original_query} {year}"
+            year_query = f"{base_query} {year}"
             
             if "qs" in query_lower and ("排名" in original_query or "ranking" in query_lower):
                 if universities:
