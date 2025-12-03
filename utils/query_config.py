@@ -41,6 +41,9 @@ TEMPORAL_CHANGE_KEYWORDS = [
     "亚马逊", "Amazon", "AMZN", "Meta", "Facebook", "FB", "特斯拉", "Tesla", "TSLA",
     "阿里巴巴", "Alibaba", "BABA", "腾讯", "Tencent", "0700.HK", "百度", "Baidu", "BIDU",
     "字节跳动", "ByteDance", "抖音", "TikTok", "美团", "Meituan", "3690.HK",
+    # 芯片/半导体公司
+    "英伟达", "NVIDIA", "NVDA", "英特尔", "Intel", "INTC", "AMD", "高通", "Qualcomm", "QCOM",
+    "台积电", "TSMC", "TSM", "三星", "Samsung", "联发科", "MediaTek", "博通", "Broadcom", "AVGO",
     
     # 经济指标相关
     "GDP", "国内生产总值", "CPI", "消费者价格指数", "通胀", "inflation", "失业率", "unemployment rate",

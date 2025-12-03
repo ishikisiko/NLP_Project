@@ -394,6 +394,10 @@ class SmartSearchOrchestrator:
                 pipeline_kwargs["date_restrict"] = time_constraint.google_date_restrict
             if reference_limit is not None:
                 pipeline_kwargs["reference_limit"] = reference_limit
+            
+            # 传递领域API数据作为额外上下文（如yfinance股票数据）
+            if domain_api_result and domain_api_result.get("answer"):
+                pipeline_kwargs["extra_context"] = domain_api_result["answer"]
 
         result = pipeline.answer(query, **pipeline_kwargs)
         control_payload = {
@@ -1224,7 +1228,7 @@ class SmartSearchOrchestrator:
     @classmethod
     def _keyword_prompt(cls, query: str) -> str:
         return (
-            "请为以下问题生成不超过4个高质量的中英文双语搜索关键词或短语，"
+            "请为以下问题生成不超过6个高质量的中英文双语搜索关键词或短语，"
             "每个关键词概念提供中英文版本，以数组形式返回JSON，"
             "例如{\"keywords\": [\"关键词1\", \"keyword 1\", \"关键词2\", \"keyword 2\"]}。\n\n"
             "规则：\n"
@@ -1232,7 +1236,10 @@ class SmartSearchOrchestrator:
             "2. 使用英文关键词提升搜索效果\n"
             "3. 对于体育比赛查询，添加'战报 highlights'、'得分统计 box score'等新闻/数据关键词\n"
             "4. 对于最新新闻查询，添加'最新 latest'、'新闻 news'等时效性关键词\n"
-            "5. 避免只生成赛程/日程类关键词，应优先生成能获取详细内容的关键词\n\n"
+            "5. 避免只生成赛程/日程类关键词，应优先生成能获取详细内容的关键词\n"
+            "6. 【重要】如果问题涉及时间范围（如前三年、近五年、历年），必须保留时间关键词\n"
+            "7. 【重要】如果问题要求具体数值/数据（如具体值、股价数据、排名数字），必须添加'数据 data'、'具体 specific'等关键词\n"
+            "8. 对于股价/金融查询，添加'stock price history'、'historical data'、'收盘价'等数据相关关键词\n\n"
             "用户问题:\n" + query
         )
 

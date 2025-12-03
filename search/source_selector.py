@@ -534,6 +534,21 @@ class IntelligentSourceSelector:
         timing_recorder: Optional[TimingRecorder] = None,
     ) -> Optional[Dict[str, Any]]:
         domain = (domain or "").lower().strip()
+        
+        # Check if query contains finance keywords even if domain is temporal_change
+        finance_keywords = ["股价", "stock", "股票", "市值", "market cap", "收益", "revenue",
+                           "英伟达", "nvidia", "nvda", "英特尔", "intel", "intc", "amd",
+                           "苹果", "apple", "aapl", "微软", "microsoft", "msft",
+                           "谷歌", "google", "googl", "亚马逊", "amazon", "amzn",
+                           "特斯拉", "tesla", "tsla", "阿里巴巴", "alibaba", "baba",
+                           "腾讯", "tencent", "百度", "baidu", "bidu"]
+        query_lower = query.lower()
+        has_finance_content = any(kw in query_lower for kw in finance_keywords)
+        
+        # If domain is temporal_change but query has finance content, treat as finance
+        if domain == "temporal_change" and has_finance_content:
+            domain = "finance"
+        
         if domain not in {"weather", "transportation", "finance", "sports", "location"}:
             return None
 
@@ -718,8 +733,14 @@ class IntelligentSourceSelector:
             "表現",
             "近",
             "最近",
+            "前",
+            "变化",
+            "變化",
+            "比较",
+            "比較",
+            "compare",
         ]
-        reasoning_keywords = ["为什么", "why", "reason", "cause", "news", "analysis", "分析", "原因", "影响"]
+        reasoning_keywords = ["为什么", "why", "reason", "cause", "news", "analysis", "分析", "原因", "影响", "影響"]
         
         is_history = any(kw in query_lower for kw in history_keywords)
         is_reasoning = any(kw in query_lower for kw in reasoning_keywords)
@@ -728,14 +749,40 @@ class IntelligentSourceSelector:
         start_date = None
         end_date = None
         
-        # Check for years first (e.g. "2年", "3 years", "十年")
-        match_years = re.search(r'(十|(\d+))\s*(?:年|years?)', query_lower)
+        # Chinese number mapping
+        chinese_num_map = {
+            "一": 1, "二": 2, "两": 2, "三": 3, "四": 4, "五": 5,
+            "六": 6, "七": 7, "八": 8, "九": 9, "十": 10,
+            "十一": 11, "十二": 12, "十三": 13, "十四": 14, "十五": 15,
+            "二十": 20, "三十": 30,
+        }
+        
+        # Check for years first (e.g. "2年", "3 years", "十年", "前三年")
+        # Extended regex to match Chinese numerals and patterns like "前三年", "近五年"
+        match_years = re.search(r'(?:前|近|过去|最近)?([一二两三四五六七八九十]+|\d+)\s*(?:年|years?)', query_lower)
         if match_years:
             is_history = True
-            if match_years.group(1) == "十":
-                years = 10
+            year_str = match_years.group(1)
+            
+            # Parse the year value
+            if year_str.isdigit():
+                years = int(year_str)
+            elif year_str in chinese_num_map:
+                years = chinese_num_map[year_str]
             else:
-                years = int(match_years.group(2))
+                # Handle compound Chinese numbers like "十五"
+                years = 0
+                for char in year_str:
+                    if char in chinese_num_map:
+                        if char == "十":
+                            if years == 0:
+                                years = 10
+                            else:
+                                years *= 10
+                        else:
+                            years += chinese_num_map[char]
+                if years == 0:
+                    years = 3  # Default to 3 years if parsing fails
             
             end_date = datetime.now().date().isoformat()
             start_date = (datetime.now() - timedelta(days=years * 365)).date().isoformat()
@@ -1305,7 +1352,7 @@ class IntelligentSourceSelector:
         return events
 
     def _query_stock_history(self, symbol: str, period: str, start: Optional[str] = None, end: Optional[str] = None, timing_recorder: Optional[TimingRecorder] = None) -> Dict[str, Any]:
-        start = time.perf_counter()
+        perf_start = time.perf_counter()
         try:
             # Ensure yfinance is available
             import yfinance as yf
@@ -1437,7 +1484,7 @@ class IntelligentSourceSelector:
             return {"error": str(exc)}
         finally:
             if timing_recorder:
-                duration_ms = (time.perf_counter() - start) * 1000
+                duration_ms = (time.perf_counter() - perf_start) * 1000
                 timing_recorder.record_search_timing(
                     source="yfinance_history",
                     label="yfinance History",

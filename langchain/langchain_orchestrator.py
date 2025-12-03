@@ -495,8 +495,16 @@ Always answer in the same language as the user's question."""
             effective_query, domain
         )
         
+        # For queries with finance keywords, use original query to preserve time expressions
+        # like "前三年" which yfinance needs for proper date range parsing
+        finance_keywords = ["股价", "stock", "股票", "市值", "market cap", "收益", "revenue",
+                           "英伟达", "nvidia", "nvda", "英特尔", "intel", "intc", "amd",
+                           "苹果", "apple", "aapl", "微软", "microsoft", "msft"]
+        has_finance_keywords = any(kw in query.lower() for kw in finance_keywords)
+        finance_query = query if has_finance_keywords else effective_query
+        
         domain_api_result = self.source_selector.fetch_domain_data(
-            effective_query, domain, timing_recorder=timing_recorder
+            finance_query, domain, timing_recorder=timing_recorder
         )
         
         should_continue = domain_api_result.get("continue_search", False) if domain_api_result else False

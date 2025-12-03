@@ -12,7 +12,7 @@ import time
 import logging
 import re
 from dataclasses import asdict
-from typing import Any, Dict, Iterator, List, Optional, Union
+from typing import Any, Dict, Iterator, List, Optional, Set, Union
 
 from langchain_core.documents import Document as LCDocument
 from langchain_core.language_models.chat_models import BaseChatModel
@@ -50,9 +50,9 @@ Always answer in the same language as the user's question.
 If the context doesn't contain relevant information, say so clearly."""
 
 DEFAULT_SEARCH_RAG_SYSTEM_PROMPT = """You are an information assistant.
-Answer user questions concisely using ONLY the provided search results and local documents.
-CRITICAL: Do NOT fabricate, invent, or guess any specific data (such as scores, numbers, statistics, dates, or names) that is not EXPLICITLY stated in the search results or local documents.
-If specific information is not found, clearly state '未在搜索结果和本地文档中找到具体数据' or 'specific data not found'.
+Answer user questions concisely using ONLY the provided search results and/or local documents.
+CRITICAL: Do NOT fabricate, invent, or guess any specific data (such as scores, numbers, statistics, dates, or names) that is not EXPLICITLY stated in the provided context.
+If specific information is not found, clearly state '未在搜索结果或本地文档中找到具体数据' or 'specific data not found'.
 When unsure, acknowledge the uncertainty instead of guessing.
 Always answer in the same language as the user's question."""
 
@@ -453,6 +453,60 @@ class SearchRAGChain:
                 universities.extend(["Hong Kong University of Science and Technology", "HKUST"])
             
             year_query = f"{base_query} {year}"
+            
+            # Enhanced stock price query detection and handling
+            is_stock_query = ("股价" in original_query or "stock price" in query_lower or 
+                            "stock" in query_lower or "shares" in query_lower or
+                            "英伟达" in original_query or "nvidia" in query_lower or
+                            "英特尔" in original_query or "intel" in query_lower or
+                            "NVDA" in original_query or "INTC" in original_query)
+            
+            needs_specific_data = ("具体" in original_query or "数值" in original_query or 
+                                  "具体值" in original_query or "数据" in original_query or
+                                  "变化" in original_query or "比较" in original_query or
+                                  "specific" in query_lower or "data" in query_lower or 
+                                  "value" in query_lower or "numbers" in query_lower or
+                                  "compare" in query_lower or "change" in query_lower)
+            
+            if is_stock_query:
+                # Extract company names for more targeted search
+                companies = []
+                if "英伟达" in original_query or "nvidia" in query_lower or "NVDA" in original_query:
+                    companies.append(("NVIDIA", "NVDA", "英伟达"))
+                if "英特尔" in original_query or "intel" in query_lower or "INTC" in original_query:
+                    companies.append(("Intel", "INTC", "英特尔"))
+                
+                if companies:
+                    # Generate specialized stock price queries for each company
+                    for eng_name, ticker, cn_name in companies:
+                        # Multiple query variants to maximize chances of finding data
+                        stock_queries = [
+                            f"{ticker} stock price {year} annual closing price",
+                            f"{eng_name} {ticker} stock performance {year}",
+                            f"{cn_name} {ticker} {year} 年股价 收盘价",
+                        ]
+                        
+                        for sq in stock_queries:
+                            try:
+                                search_kwargs = {
+                                    "num_results": 2,
+                                    "freshness": None,
+                                    "date_restrict": None,
+                                }
+                                sq_hits = active_client.search(sq, **search_kwargs)
+                                granular_hits.extend(sq_hits)
+                                logger.info(f"Stock query '{sq}' found {len(sq_hits)} hits.")
+                            except Exception as e:
+                                logger.warning(f"Stock search '{sq}' failed: {e}")
+                        
+                        time.sleep(0.5)  # Avoid rate limits
+                    continue  # Skip default year_query for stock queries
+                else:
+                    # Generic stock query enhancement
+                    if any("\u4e00" <= c <= "\u9fff" for c in original_query):
+                        year_query = f"{base_query} {year} 股价数据 收盘价 年度表现"
+                    else:
+                        year_query = f"{base_query} {year} stock price data closing price annual"
             
             if "qs" in query_lower and ("排名" in original_query or "ranking" in query_lower):
                 if universities:
