@@ -27,15 +27,7 @@
         "safe": "medium",
         "timeout": 15
     },
-    "mcpServers": {
-        "web-search-prime": {
-            "type": "streamable-http",
-            "url": "https://open.bigmodel.cn/api/mcp/web_search_prime/mcp",
-            "headers": {
-                "Authorization": "Bearer YOUR_MCP_AUTH_TOKEN_HERE"
-            }
-        }
-    },
+
     "rerank": {
         "enabled": true,
         "api_key": "YOUR_DASHSCOPE_API_KEY_HERE",

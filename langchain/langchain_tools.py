@@ -17,7 +17,6 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from search.search import (
     CombinedSearchClient,
     GoogleSearchClient,
-    MCPWebSearchClient,
     SearchClient,
     SearchHit,
     SerpAPISearchClient,
@@ -135,23 +134,7 @@ class GoogleSearchTool(WebSearchTool):
         super().__init__(search_client=client, **kwargs)
 
 
-class MCPSearchTool(WebSearchTool):
-    """LangChain tool for MCP web-search-prime."""
-    
-    name: str = "mcp_search"
-    description: str = (
-        "Search the web using MCP web-search-prime endpoint. "
-        "A fast and efficient search provider."
-    )
 
-    def __init__(
-        self,
-        base_url: str,
-        headers: Optional[Dict[str, str]] = None,
-        **kwargs: Any,
-    ) -> None:
-        client = MCPWebSearchClient(base_url=base_url, headers=headers)
-        super().__init__(search_client=client, **kwargs)
 
 
 class CombinedSearchTool(WebSearchTool):
@@ -216,23 +199,6 @@ def create_search_tool_from_config(config: Dict[str, Any]) -> Optional[WebSearch
             clients.append(GoogleSearchClient(api_key=google_key, cx=google_cx, **google_kwargs))
         except Exception as exc:
             print(f"[search tool] Google Search disabled: {exc}")
-    
-    # MCP web-search-prime
-    mcp_config = (config.get("mcpServers") or {}).get("web-search-prime") or {}
-    base_url = (mcp_config.get("url") or "").strip()
-    headers = mcp_config.get("headers") or {}
-    has_auth = any(headers.get(token) for token in ("Authorization", "authorization"))
-    if base_url and has_auth:
-        try:
-            clients.append(
-                MCPWebSearchClient(
-                    base_url=base_url,
-                    headers=headers,
-                    timeout=mcp_config.get("timeout", 20),
-                )
-            )
-        except Exception as exc:
-            print(f"[search tool] MCP disabled: {exc}")
     
     if not clients:
         return None

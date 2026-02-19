@@ -19,7 +19,6 @@ __all__ = [
     "SerpAPISearchClient",
     "YouSearchClient",
     "GoogleSearchClient",
-    "MCPWebSearchClient",
     "CombinedSearchClient",
     "FallbackSearchClient",
     "BaseReranker",

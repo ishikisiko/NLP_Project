@@ -68,7 +68,7 @@ def build_search_client(
 ) -> Optional[SearchClient]:
     """Build a search client from config supporting SerpAPI, You.com, Google, and MCP sources."""
 
-    allowed_sources = {"serp", "you", "mcp", "google"}
+    allowed_sources = {"serp", "you", "google"}
     requested_order: Optional[List[str]] = None
     requested_lookup: Optional[Set[str]] = None
     if sources is not None:
@@ -127,7 +127,7 @@ def build_search_client(
         return None
 
     clients: List[SearchClient] = []
-    configured_flags: Dict[str, bool] = {"serp": False, "you": False, "mcp": False, "google": False}
+    configured_flags: Dict[str, bool] = {"serp": False, "you": False, "google": False}
     missing_requested: List[str] = []
 
     serp_key = (config_or_key.get("SERPAPI_API_KEY") or "").strip()
@@ -184,36 +184,6 @@ def build_search_client(
                 print(f"[search] You.com search disabled: {exc}")
     elif requested_lookup is not None and "you" in requested_lookup:
         missing_requested.append("you")
-
-    mcp_config = (config_or_key.get("mcpServers") or {}).get("web-search-prime") or {}
-    base_url = (mcp_config.get("url") or "").strip()
-    headers = mcp_config.get("headers") or {}
-    has_auth = any(headers.get(token) for token in ("Authorization", "authorization"))
-    if base_url and has_auth:
-        configured_flags["mcp"] = True
-        if wants("mcp"):
-            timeout_raw = mcp_config.get("timeout")
-            try:
-                timeout_value = int(timeout_raw) if timeout_raw is not None else 20
-            except (TypeError, ValueError):
-                timeout_value = 20
-            search_path = (mcp_config.get("search_path") or "").strip()
-            try:
-                clients.append(
-                    MCPWebSearchClient(
-                        base_url=base_url,
-                        headers=headers,
-                        timeout=timeout_value,
-                        search_path=search_path,
-                    )
-                )
-            except Exception as exc:
-                print(f"[search] MCP web-search-prime disabled: {exc}")
-    else:
-        if base_url and not has_auth:
-            print("[search] MCP web-search-prime missing Authorization header; skipping.")
-        if requested_lookup is not None and "mcp" in requested_lookup:
-            missing_requested.append("mcp")
 
     # Google Custom Search JSON API
     google_cfg = config_or_key.get("googleSearch") or {}

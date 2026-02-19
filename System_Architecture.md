@@ -74,7 +74,6 @@ sequenceDiagram
 *   **Search & Data Sources**:
     *   **Web**: SerpAPI, You.com, Google Custom Search.
     *   **Domain APIs**: Google Weather/Routes/Places, Finnhub, Yahoo Finance, TheSportsDB.
-    *   **MCP**: Support for Model Context Protocol servers.
 
 ---
 

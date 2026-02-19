@@ -40,7 +40,6 @@ class SmartSearchOrchestrator:
     SEARCH_SOURCE_LABELS = {
         "serp": "SerpAPI",
         "you": "You.com",
-        "mcp": "MCP",
     }
 
     def __init__(
