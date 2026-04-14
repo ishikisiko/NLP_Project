@@ -80,7 +80,7 @@ def build_pipeline(
     model_override: Optional[str] = None,
     *,
     search_sources: Optional[List[str]] = None,
-) -> LangChainOrchestrator:
+) -> Any:
     """Create a LangChain pipeline configured for the current request."""
 
     # Deep copy to avoid mutating cached configuration between requests
@@ -121,12 +121,12 @@ def build_pipeline(
                 return matched
 
         preferred_order = [
+            "minimax",
             "zai",
             "glm",
             "openai",
             "anthropic",
             "google",
-            "minimax",
             "hkgai",
             "openrouter",
         ]
@@ -137,7 +137,7 @@ def build_pipeline(
         if configured and configured in providers_cfg:
             return configured
 
-        return next(iter(providers_cfg.keys()), "zai")
+        return next(iter(providers_cfg.keys()), "minimax")
 
     config["LLM_PROVIDER"] = resolve_default_provider()
     if model_override:
@@ -233,6 +233,15 @@ def build_pipeline(
     max_per_domain = max(1, int(rerank_config.get("max_per_domain", 1)))
     show_timings = bool(config.get("displayResponseTimes", False))
 
+    if config.get("orchestrator_mode") == "react":
+        from orchestrators.react_agent_orchestrator import ReactAgentOrchestrator
+        print("[server] Using React Agent orchestrator")
+        return ReactAgentOrchestrator.create_from_config(
+            config=config,
+            llm=llm,
+            search_client=search_client,
+        )
+
     return create_langchain_orchestrator(
         config=config,
         llm=llm,
@@ -254,6 +263,22 @@ def build_pipeline(
 @app.route("/")
 def index() -> Any:
     return app.send_static_file("index.html")
+
+
+@app.route("/api/health")
+def health() -> Any:
+    """Health check endpoint to verify the server and agent are properly initialized."""
+    try:
+        config = copy.deepcopy(load_base_config())
+        return jsonify({
+            "status": "ok",
+            "orchestrator_mode": config.get("orchestrator_mode", "langchain"),
+        })
+    except Exception as exc:
+        return jsonify({
+            "status": "error",
+            "error": str(exc),
+        }), 500
 
 
 @app.route("/api/models")
@@ -427,7 +452,7 @@ def answer() -> Any:
 
     # Use configured temperature for direct answer as default, but allow request override
     config = load_base_config()
-    provider = config.get("LLM_PROVIDER", "zai")
+    provider = config.get("LLM_PROVIDER", "minimax")
     if "/" in provider:
         # Extract provider from model path
         provider = provider.split("/")[0]

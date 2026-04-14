@@ -1,6 +1,10 @@
 {
     "displayResponseTimes": true,
     "LLM_PROVIDER": "zai",
+    "orchestrator_mode": "langchain",
+    "reactAgent": {
+        "max_iterations": 5
+    },
     "domainClassifier": {
         "provider": "zai",
         "model": "glm-4.5-air"

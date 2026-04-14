@@ -407,7 +407,7 @@ def create_chat_model(
     if config is None:
         config = _load_config()
     
-    provider = provider or config.get("LLM_PROVIDER", "openai")
+    provider = provider or config.get("LLM_PROVIDER", "minimax")
     
     # Handle model path format (e.g., "openrouter/model-name")
     if "/" in provider and model is None:

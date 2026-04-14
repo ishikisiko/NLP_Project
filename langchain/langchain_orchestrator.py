@@ -990,6 +990,87 @@ Always answer in the same language as the user's question."""
         
         return result
 
+    @staticmethod
+    def create_react_agent(
+        llm: BaseChatModel,
+        tools: List[Any],
+        max_iterations: int = 5,
+        react_prompt: Optional[str] = None,
+    ) -> Any:
+        """Create a LangChain ReAct agent.
+
+        Args:
+            llm: LangChain chat model
+            tools: List of LangChain BaseTool instances
+            max_iterations: Maximum number of agent iterations
+            react_prompt: Optional custom ReAct prompt (Chinese-optimized)
+
+        Returns:
+            AgentExecutor instance ready to run
+        """
+        from langchain.agents import create_react_agent, AgentExecutor
+
+        # Default ReAct prompt (English)
+        default_react_prompt = """You are a helpful assistant.
+
+You have access to the following tools:
+
+{tools}
+
+To use a tool, respond in the following format:
+
+```
+Thought: the assistant thinks about what to do
+Action: the name of the tool to use (only one of: {tool_names})
+Action Input: the input to the tool
+Observation: the result of the tool
+```
+
+When you have a response for the user, respond in this format instead:
+
+```
+Thought: I have gathered enough information to answer the user's question.
+Final Answer: [your response here]
+```
+
+Begin!"""
+
+        # Chinese-optimized ReAct prompt
+        chinese_react_prompt = """你是一个智能助手。
+
+你可以使用以下工具：
+
+{tools}
+
+使用工具的格式：
+
+```
+Thought: 思考应该做什么
+Action: 工具名称（只能使用以下工具之一: {tool_names}）
+Action Input: 工具的输入
+Observation: 工具的返回结果
+```
+
+当你收集到足够的信息时，用以下格式回答：
+
+```
+Thought: 我已经收集到足够的信息来回答用户的问题。
+Final Answer: [你的回答]
+```
+
+开始！"""
+
+        prompt_template = react_prompt or chinese_react_prompt
+
+        agent = create_react_agent(llm, tools, prompt_template)
+        return AgentExecutor.from_agent_and_tools(
+            agent,
+            tools,
+            max_iterations=max_iterations,
+            verbose=True,
+            handle_parsing_errors=True,
+        )
+
 
 # Factory function
 def create_langchain_orchestrator(

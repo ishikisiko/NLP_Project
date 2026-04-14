@@ -437,10 +437,13 @@ document.addEventListener("DOMContentLoaded", () => {
             modelSelect.innerHTML = "";
             const defaultOption = document.createElement("option");
             defaultOption.value = "";
-            defaultOption.textContent = "默认模型 (Zai - glm-4.6)";
+            defaultOption.textContent = "默认模型 (MiniMax - MiniMax-M2.7-highspeed)";
             modelSelect.appendChild(defaultOption);
 
             const fallback = {
+                MiniMax: [
+                    { id: "minimax", label: "MiniMax — MiniMax-M2.7-highspeed (provider default)" },
+                ],
                 Zai: [
                     { id: "glm-4.6", label: "Zai — glm-4.6" },
                     { id: "glm-4.5-air", label: "Zai — glm-4.5-air" },
@@ -461,15 +464,12 @@ document.addEventListener("DOMContentLoaded", () => {
                 Google: [
                     { id: "google", label: "Google — gemini-pro (provider default)" },
                 ],
-                Minimax: [
-                    { id: "minimax", label: "Minimax — minimax-m2:free (provider default)" },
-                ],
                 HKGAI: [
                     { id: "hkgai", label: "HKGAI — HKGAI-V1 (provider default)" },
                 ],
             };
 
-            for (const groupName of ["Zai", "GLM", "OpenAI", "Anthropic", "Google", "Minimax", "HKGAI", "OpenRouter"]) {
+            for (const groupName of ["MiniMax", "Zai", "GLM", "OpenAI", "Anthropic", "Google", "HKGAI", "OpenRouter"]) {
                 const optgroup = document.createElement("optgroup");
                 optgroup.label = groupName;
                 for (const item of fallback[groupName]) {
