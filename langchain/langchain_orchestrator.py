@@ -25,11 +25,13 @@ from pydantic import BaseModel, Field
 # Add parent directory to path for imports
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from langchain.langchain_rag import LocalRAGChain, SearchRAGChain
+from langchain.langchain_rag import LocalRAGChain, NullSearchClient, SearchRAGChain
+from langchain.postcheck import PostcheckVerdict, merge_judge_verdict, screen_search_answer
 from langchain.langchain_support import Document, LangChainVectorStore
 from search.search import SearchClient, SearchHit
 from search.source_selector import IntelligentSourceSelector
 from utils.time_parser import TimeConstraint, parse_time_constraint
+from utils.search_routing import coerce_bool, extract_json_object, is_small_talk_query, normalize_sources
 from utils.timing_utils import TimingRecorder
 from utils.current_time import get_current_date_str
 
@@ -98,12 +100,6 @@ Rules:
     DIRECT_ANSWER_SYSTEM_PROMPT = """You are a knowledgeable assistant. Answer clearly based on your existing knowledge.
 Always answer in the same language as the user's question."""
 
-    SMALL_TALK_PATTERNS = {
-        "hi", "hello", "hey", "thanks", "thank you", "good morning", "good night",
-        "bye", "goodbye", "see you", "你好", "您好", "嗨", "谢谢", "感谢", "早上好",
-        "晚上好", "晚安", "再见", "拜拜", "哈囉", "謝謝", "感謝", "早安", "再見", "掰掰",
-    }
-
     def __init__(
         self,
         llm: BaseChatModel,
@@ -111,6 +107,7 @@ Always answer in the same language as the user's question."""
         *,
         classifier_llm: Optional[BaseChatModel] = None,
         routing_llm: Optional[BaseChatModel] = None,
+        postcheck_llm: Optional[BaseChatModel] = None,
         data_path: Optional[str] = None,
         reranker: Optional[Any] = None,
         min_rerank_score: float = 0.0,
@@ -127,10 +124,12 @@ Always answer in the same language as the user's question."""
         active_search_source_labels: Optional[List[str]] = None,
         missing_search_sources: Optional[List[str]] = None,
         configured_search_sources: Optional[List[str]] = None,
+        config: Optional[Dict[str, Any]] = None,
     ) -> None:
         self.llm = llm
         self.classifier_llm = classifier_llm or llm
         self.routing_llm = routing_llm or llm
+        self.config = config or {}
         self.search_client = search_client
         self.data_path = data_path
         self.reranker = reranker
@@ -138,6 +137,9 @@ Always answer in the same language as the user's question."""
         self.max_per_domain = max(1, max_per_domain)
         self.show_timings = show_timings
         self.google_api_key = google_api_key
+        self.postcheck_llm = postcheck_llm or self.llm
+        self.postcheck_config = self._normalize_postcheck_config(self.config.get("postcheck") or {})
+        self._react_fallback_orchestrator: Optional[Any] = None
         
         # Initialize source selector
         if source_selector:
@@ -171,10 +173,29 @@ Always answer in the same language as the user's question."""
         self._search_rag: Optional[SearchRAGChain] = None
         self._local_signature: Optional[tuple] = None
         self._search_signature: Optional[tuple] = None
+        self._primary_rag: Optional[SearchRAGChain] = None
+        self._primary_signature: Optional[tuple] = None
         
         # Build decision chain
         self._decision_chain = self._build_decision_chain()
         self._keyword_chain = self._build_keyword_chain()
+
+    @staticmethod
+    def _normalize_postcheck_config(config: Dict[str, Any]) -> Dict[str, Any]:
+        """Normalize post-check configuration with safe defaults."""
+        react_cfg = config.get("react_fallback") or {}
+        judge_cfg = config.get("judge") or {}
+        return {
+            "enabled": bool(config.get("enabled", False)),
+            "log_verdicts": bool(config.get("log_verdicts", False)),
+            "judge": {
+                "enabled": bool(judge_cfg.get("enabled", True)),
+            },
+            "react_fallback": {
+                "enabled": bool(react_cfg.get("enabled", False)),
+                "max_iterations": int(react_cfg.get("max_iterations", 4) or 4),
+            },
+        }
 
     def _build_decision_chain(self):
         """Build the routing decision chain."""
@@ -197,30 +218,11 @@ Always answer in the same language as the user's question."""
     @staticmethod
     def _normalize_sources(sources: Optional[List[str]]) -> List[str]:
         """Normalize source list."""
-        if not sources:
-            return []
-        normalized = []
-        for item in sources:
-            if item is None:
-                continue
-            token = str(item).strip().lower()
-            if token and token not in normalized:
-                normalized.append(token)
-        return normalized
+        return normalize_sources(sources)
 
     def _is_small_talk(self, query: str) -> bool:
         """Check if query is small talk."""
-        stripped = (query or "").strip()
-        if not stripped:
-            return True
-        
-        lowered = stripped.lower()
-        if lowered in self.SMALL_TALK_PATTERNS or stripped in self.SMALL_TALK_PATTERNS:
-            return True
-        
-        # Check for substring matches
-        substring_triggers = ["你好", "您好", "嗨", "哈喽", "拜拜", "谢谢", "感谢", "哈囉", "掰掰", "謝謝", "感謝"]
-        return any(token in stripped for token in substring_triggers)
+        return is_small_talk_query(query)
 
     def _make_routing_decision(
         self,
@@ -237,19 +239,10 @@ Always answer in the same language as the user's question."""
             try:
                 parsed = json.loads(content)
             except json.JSONDecodeError:
-                # Try to extract JSON from response
-                start_idx = content.find("{")
-                end_idx = content.rfind("}") + 1
-                if start_idx != -1 and end_idx > start_idx:
-                    try:
-                        parsed = json.loads(content[start_idx:end_idx])
-                    except json.JSONDecodeError:
-                        parsed = {"needs_search": True, "reason": "parse_error"}
-                else:
-                    parsed = {"needs_search": True, "reason": "parse_error"}
+                parsed = extract_json_object(content) or {"needs_search": True, "reason": "parse_error"}
             
             return {
-                "needs_search": parsed.get("needs_search", True),
+                "needs_search": coerce_bool(parsed.get("needs_search"), True),
                 "reason": parsed.get("reason", ""),
                 "direct_answer": parsed.get("answer", ""),
                 "raw_text": content[:100] if content else None,
@@ -286,15 +279,7 @@ Always answer in the same language as the user's question."""
             try:
                 parsed = json.loads(content)
             except json.JSONDecodeError:
-                start_idx = content.find("{")
-                end_idx = content.rfind("}") + 1
-                if start_idx != -1 and end_idx > start_idx:
-                    try:
-                        parsed = json.loads(content[start_idx:end_idx])
-                    except json.JSONDecodeError:
-                        parsed = {"keywords": []}
-                else:
-                    parsed = {"keywords": []}
+                parsed = extract_json_object(content) or {"keywords": []}
             
             keywords = parsed.get("keywords", [])
             if isinstance(keywords, str):
@@ -343,21 +328,33 @@ Always answer in the same language as the user's question."""
         """Get or create search RAG pipeline."""
         if not self.search_client:
             return None
-        
-        search_signature = (id(self.search_client), snapshot)
-        
-        if self._search_rag is None or self._search_signature != search_signature:
-            self._search_rag = SearchRAGChain(
+        return self._get_primary_rag(snapshot, require_search_client=True)
+
+    def _get_primary_rag(
+        self,
+        snapshot: Optional[tuple],
+        *,
+        require_search_client: bool = False,
+    ) -> Optional[SearchRAGChain]:
+        """Get or create the unified primary RAG pipeline."""
+        if require_search_client and not self.search_client:
+            return None
+
+        search_client = self.search_client or NullSearchClient()
+        search_signature = (id(search_client), snapshot)
+
+        if self._primary_rag is None or self._primary_signature != search_signature:
+            self._primary_rag = SearchRAGChain(
                 llm=self.llm,
-                search_client=self.search_client,
+                search_client=search_client,
                 data_path=self.data_path,
                 reranker=self.reranker,
                 min_rerank_score=self.min_rerank_score,
                 max_per_domain=self.max_per_domain,
             )
-            self._search_signature = search_signature
-        
-        return self._search_rag
+            self._primary_signature = search_signature
+
+        return self._primary_rag
 
     def _snapshot_local_docs(self) -> Optional[tuple]:
         """Create a snapshot of local documents for cache invalidation."""
@@ -421,6 +418,45 @@ Always answer in the same language as the user's question."""
                     provider=getattr(self.llm, "provider", None),
                     model=getattr(self.llm, "model_name", None),
                 )
+
+    def _run_primary_rag(
+        self,
+        *,
+        query: str,
+        snapshot: Optional[tuple],
+        num_retrieved_docs: int,
+        max_tokens: int,
+        temperature: float,
+        timing_recorder: Optional[TimingRecorder],
+        enable_search: bool,
+        num_search_results: int = 0,
+        per_source_limit: Optional[int] = None,
+        reference_limit: Optional[int] = None,
+        search_query: Optional[str] = None,
+        freshness: Optional[str] = None,
+        date_restrict: Optional[str] = None,
+        extra_context: Optional[str] = None,
+    ) -> Optional[Dict[str, Any]]:
+        pipeline = self._get_primary_rag(snapshot)
+        if not pipeline:
+            return None
+
+        return pipeline.answer(
+            query,
+            search_query=search_query,
+            num_search_results=max(1, int(num_search_results or 1)),
+            per_source_limit=per_source_limit,
+            num_retrieved_docs=num_retrieved_docs,
+            max_tokens=max_tokens,
+            temperature=temperature,
+            enable_search=enable_search,
+            enable_local_docs=bool(snapshot),
+            reference_limit=reference_limit,
+            freshness=freshness,
+            date_restrict=date_restrict,
+            timing_recorder=timing_recorder,
+            extra_context=extra_context,
+        )
 
     def answer(
         self,
@@ -553,29 +589,28 @@ Always answer in the same language as the user's question."""
         search_query = " ".join(keywords).strip() or effective_query
         
         # Execute search RAG
-        pipeline = self._get_search_rag(snapshot)
-        if not pipeline:
+        result = self._run_primary_rag(
+            query=query,
+            snapshot=snapshot,
+            num_retrieved_docs=num_retrieved_docs,
+            max_tokens=max_tokens,
+            temperature=temperature,
+            timing_recorder=timing_recorder,
+            enable_search=True,
+            num_search_results=total_limit,
+            per_source_limit=per_source_limit,
+            reference_limit=reference_limit,
+            search_query=search_query,
+            freshness=time_constraint.you_freshness if time_constraint.days else None,
+            date_restrict=time_constraint.google_date_restrict if time_constraint.days else None,
+            extra_context=domain_api_result.get("answer") if domain_api_result and should_continue else None,
+        )
+        if not result:
             response = self._handle_search_unavailable(
                 query, snapshot, has_docs, num_retrieved_docs,
                 max_tokens, temperature, timing_recorder
             )
             return self._finalize_response(response, timing_recorder)
-        
-        result = pipeline.answer(
-            query,
-            search_query=search_query,
-            num_search_results=total_limit,
-            per_source_limit=per_source_limit,
-            num_retrieved_docs=num_retrieved_docs,
-            max_tokens=max_tokens,
-            temperature=temperature,
-            enable_search=True,
-            freshness=time_constraint.you_freshness if time_constraint.days else None,
-            date_restrict=time_constraint.google_date_restrict if time_constraint.days else None,
-            reference_limit=reference_limit,
-            timing_recorder=timing_recorder,
-            extra_context=domain_api_result.get("answer") if domain_api_result and should_continue else None,
-        )
         
         # Add control metadata
         control = {
@@ -605,6 +640,22 @@ Always answer in the same language as the user's question."""
         
         result["control"] = control
         result["search_query"] = search_query
+
+        result = self._apply_postcheck(
+            query=query,
+            result=result,
+            control=control,
+            time_constraint=time_constraint,
+            domain_api_result=domain_api_result,
+            num_search_results=total_limit,
+            per_source_limit=per_source_limit,
+            num_retrieved_docs=num_retrieved_docs,
+            max_tokens=max_tokens,
+            temperature=temperature,
+            reference_limit=reference_limit,
+            force_search=force_search,
+            timing_recorder=timing_recorder,
+        )
         
         return self._finalize_response(result, timing_recorder)
 
@@ -763,24 +814,35 @@ Always answer in the same language as the user's question."""
     ) -> Dict[str, Any]:
         """Handle local-only queries (search disabled)."""
         if not has_docs:
-            direct = self._direct_answer(query, timing_recorder)
-            return {
-                "query": query,
-                "answer": direct.get("content", ""),
-                "search_hits": [],
-                "llm_raw": direct.get("raw"),
-                "llm_error": direct.get("error"),
-                "control": {
+            pipeline_result = self._run_primary_rag(
+                query=query,
+                snapshot=snapshot,
+                num_retrieved_docs=num_retrieved_docs,
+                max_tokens=max_tokens,
+                temperature=temperature,
+                timing_recorder=timing_recorder,
+                enable_search=False,
+            )
+            if pipeline_result:
+                pipeline_result["control"] = {
                     "search_performed": False,
                     "decision": {"needs_search": False, "reason": "search_disabled"},
-                    "search_mode": "direct_llm",
+                    "search_mode": "local_rag",
                     "local_docs_present": False,
                     "search_allowed": False,
-                },
-            }
-        
-        pipeline = self._get_local_rag(snapshot)
-        if not pipeline:
+                }
+                return pipeline_result
+
+        pipeline_result = self._run_primary_rag(
+            query=query,
+            snapshot=snapshot,
+            num_retrieved_docs=num_retrieved_docs,
+            max_tokens=max_tokens,
+            temperature=temperature,
+            timing_recorder=timing_recorder,
+            enable_search=False,
+        )
+        if not pipeline_result:
             direct = self._direct_answer(query, timing_recorder)
             return {
                 "query": query,
@@ -796,24 +858,16 @@ Always answer in the same language as the user's question."""
                     "search_allowed": False,
                 },
             }
-        
-        result = pipeline.answer(
-            query,
-            num_retrieved_docs=num_retrieved_docs,
-            max_tokens=max_tokens,
-            temperature=temperature,
-            timing_recorder=timing_recorder,
-        )
-        
-        result["control"] = {
+
+        pipeline_result["control"] = {
             "search_performed": False,
             "decision": {"needs_search": False, "reason": "search_disabled"},
             "search_mode": "local_rag",
-            "local_docs_present": True,
+            "local_docs_present": has_docs,
             "search_allowed": False,
         }
-        
-        return result
+
+        return pipeline_result
 
     def _handle_domain_api(
         self,
@@ -928,12 +982,23 @@ Always answer in the same language as the user's question."""
         timing_recorder: Optional[TimingRecorder],
     ) -> Dict[str, Any]:
         """Handle case where search is requested but unavailable."""
-        result = self._handle_local_only(
-            query, snapshot, has_docs, num_retrieved_docs,
-            max_tokens, temperature, timing_recorder
+        result = self._run_primary_rag(
+            query=query,
+            snapshot=snapshot,
+            num_retrieved_docs=num_retrieved_docs,
+            max_tokens=max_tokens,
+            temperature=temperature,
+            timing_recorder=timing_recorder,
+            enable_search=False,
         )
-        result["control"]["search_mode"] = "search_unavailable"
-        result["control"]["search_allowed"] = True
+        if result is None:
+            result = self._handle_local_only(
+                query, snapshot, has_docs, num_retrieved_docs,
+                max_tokens, temperature, timing_recorder
+            )
+        control = result.setdefault("control", {})
+        control["search_mode"] = "search_unavailable"
+        control["search_allowed"] = True
         return result
 
     def _build_direct_response(
@@ -969,6 +1034,23 @@ Always answer in the same language as the user's question."""
     ) -> Dict[str, Any]:
         """Finalize response with timing and metadata."""
         control = result.get("control", {})
+        if "postcheck" not in control:
+            control["postcheck"] = {
+                "eligible": False,
+                "skipped_reason": "non_search_path",
+                "rule_hits": [],
+                "judge_used": False,
+                "judge_error": None,
+                "passes_postcheck": True,
+                "should_fallback_to_react": False,
+                "recoverable": False,
+                "failure_types": [],
+                "missing_constraints": [],
+                "evidence_sufficiency": "unknown",
+                "reason": "postcheck_not_applicable",
+            }
+        control.setdefault("fallback_triggered", False)
+        control.setdefault("final_executor", "default_pipeline")
         
         # Add search source metadata
         control.setdefault("search_sources_requested", self.requested_search_sources)
@@ -989,6 +1071,259 @@ Always answer in the same language as the user's question."""
                 result["response_times"] = timing_payload
         
         return result
+
+    def _format_evidence_summary(
+        self,
+        search_hits: List[Dict[str, Any]],
+        retrieved_docs: List[Dict[str, Any]],
+        domain_answer: Optional[str],
+    ) -> str:
+        """Build a concise evidence summary for ReAct fallback input."""
+        lines: List[str] = []
+        if domain_answer:
+            lines.append(f"Domain Context:\n{domain_answer}")
+        if search_hits:
+            lines.append("Search Hits:")
+            for index, hit in enumerate(search_hits[:5], start=1):
+                lines.append(
+                    f"{index}. {hit.get('title') or f'Result {index}'} | "
+                    f"{hit.get('url') or 'N/A'} | {hit.get('snippet') or ''}"
+                )
+        if retrieved_docs:
+            lines.append("Local Documents:")
+            for index, doc in enumerate(retrieved_docs[:3], start=1):
+                source = doc.get("source") or f"Document {index}"
+                content_preview = str(doc.get("content") or "")[:200]
+                lines.append(f"{index}. {source} | {content_preview}")
+        return "\n".join(lines).strip()
+
+    def _build_recovery_goal(self, verdict: PostcheckVerdict) -> str:
+        """Translate verdict into a concise recovery objective for ReAct."""
+        parts: List[str] = []
+        if verdict.failure_types:
+            parts.append(f"Address these failure types: {', '.join(verdict.failure_types)}.")
+        if verdict.missing_constraints:
+            parts.append(f"Explicitly cover these missing constraints: {', '.join(verdict.missing_constraints)}.")
+        if verdict.evidence_sufficiency == "insufficient":
+            parts.append("Gather more evidence before answering.")
+        parts.append("Return a corrected final answer grounded in available evidence.")
+        return " ".join(parts)
+
+    def _coerce_bool(self, value: Any, default: bool = False) -> bool:
+        if isinstance(value, bool):
+            return value
+        if isinstance(value, str):
+            lowered = value.strip().lower()
+            if lowered in {"true", "1", "yes", "y", "on"}:
+                return True
+            if lowered in {"false", "0", "no", "n", "off"}:
+                return False
+        return default
+
+    def _parse_json_payload(self, content: str) -> Optional[Dict[str, Any]]:
+        content = (content or "").strip()
+        if not content:
+            return None
+        try:
+            parsed = json.loads(content)
+            return parsed if isinstance(parsed, dict) else None
+        except json.JSONDecodeError:
+            start_idx = content.find("{")
+            end_idx = content.rfind("}") + 1
+            if start_idx != -1 and end_idx > start_idx:
+                try:
+                    parsed = json.loads(content[start_idx:end_idx])
+                    return parsed if isinstance(parsed, dict) else None
+                except json.JSONDecodeError:
+                    return None
+        return None
+
+    def _run_postcheck_judge(
+        self,
+        *,
+        query: str,
+        answer: str,
+        verdict: PostcheckVerdict,
+        result: Dict[str, Any],
+        timing_recorder: Optional[TimingRecorder],
+    ) -> Optional[Dict[str, Any]]:
+        """Ask an LLM judge whether the search answer should escalate to ReAct."""
+        if not self.postcheck_config["judge"]["enabled"]:
+            return None
+
+        search_hits = result.get("search_hits") or []
+        retrieved_docs = result.get("retrieved_docs") or []
+        search_hit_preview = json.dumps(search_hits[:4], ensure_ascii=False)
+        retrieved_doc_preview = json.dumps(retrieved_docs[:3], ensure_ascii=False)
+        rule_hits_preview = json.dumps(verdict.rule_hits, ensure_ascii=False)
+
+        system_prompt = (
+            "You are a strict post-check judge for a search pipeline. "
+            "Return JSON only with keys: "
+            "passes_postcheck, should_fallback_to_react, recoverable, "
+            "failure_types, missing_constraints, evidence_sufficiency, reason."
+        )
+        user_prompt = (
+            f"Query:\n{query}\n\n"
+            f"Answer:\n{answer}\n\n"
+            f"Rule Screen Hits:\n{rule_hits_preview}\n\n"
+            f"Search Hits:\n{search_hit_preview}\n\n"
+            f"Retrieved Docs:\n{retrieved_doc_preview}\n\n"
+            "Judge whether the answer already satisfies the user's request. "
+            "Only set should_fallback_to_react=true when the failure is recoverable through multi-step tool use. "
+            "Set recoverable=false for unavailable data, unavailable services, or when the answer already honestly says evidence is insufficient."
+        )
+
+        start = time.perf_counter()
+        try:
+            response = self.postcheck_llm.invoke(
+                [SystemMessage(content=system_prompt), HumanMessage(content=user_prompt)]
+            )
+            content = response.content if hasattr(response, "content") else str(response)
+            return self._parse_json_payload(content)
+        except Exception as exc:
+            verdict.judge_error = str(exc)
+            return None
+        finally:
+            if timing_recorder:
+                duration_ms = (time.perf_counter() - start) * 1000
+                timing_recorder.record_llm_call(
+                    label="postcheck_judge",
+                    duration_ms=duration_ms,
+                    provider=getattr(self.postcheck_llm, "provider", None),
+                    model=getattr(self.postcheck_llm, "model_name", None),
+                )
+
+    def _get_react_fallback_orchestrator(self) -> Optional[Any]:
+        """Lazily create the ReAct fallback orchestrator."""
+        if self._react_fallback_orchestrator is not None:
+            return self._react_fallback_orchestrator
+        if not self.search_client:
+            return None
+        from orchestrators.react_agent_orchestrator import ReactAgentOrchestrator
+
+        self._react_fallback_orchestrator = ReactAgentOrchestrator.create_from_config(
+            config=self.config,
+            llm=self.llm,
+            search_client=self.search_client,
+            data_path=self.data_path,
+            max_iterations=self.postcheck_config["react_fallback"]["max_iterations"],
+            show_timings=self.show_timings,
+        )
+        return self._react_fallback_orchestrator
+
+    def _apply_postcheck(
+        self,
+        *,
+        query: str,
+        result: Dict[str, Any],
+        control: Dict[str, Any],
+        time_constraint: TimeConstraint,
+        domain_api_result: Optional[Dict[str, Any]],
+        num_search_results: int,
+        per_source_limit: int,
+        num_retrieved_docs: int,
+        max_tokens: int,
+        temperature: float,
+        reference_limit: Optional[int],
+        force_search: bool,
+        timing_recorder: Optional[TimingRecorder],
+    ) -> Dict[str, Any]:
+        """Run post-check and optionally escalate to ReAct fallback."""
+        postcheck_meta: Dict[str, Any]
+        if not self.postcheck_config["enabled"]:
+            postcheck_meta = {
+                "eligible": False,
+                "skipped_reason": "disabled",
+                "rule_hits": [],
+                "judge_used": False,
+                "judge_error": None,
+                "passes_postcheck": True,
+                "should_fallback_to_react": False,
+                "recoverable": False,
+                "failure_types": [],
+                "missing_constraints": [],
+                "evidence_sufficiency": "unknown",
+                "reason": "postcheck_disabled",
+            }
+            control["postcheck"] = postcheck_meta
+            control["fallback_triggered"] = False
+            control["final_executor"] = "default_pipeline"
+            return result
+
+        verdict = screen_search_answer(
+            query=query,
+            answer=str(result.get("answer") or ""),
+            search_hits=result.get("search_hits") or [],
+            retrieved_docs=result.get("retrieved_docs") or [],
+            time_constraint=time_constraint,
+            search_error=result.get("search_error"),
+        )
+
+        if verdict.rule_hits and verdict.recoverable:
+            judge_payload = self._run_postcheck_judge(
+                query=query,
+                answer=str(result.get("answer") or ""),
+                verdict=verdict,
+                result=result,
+                timing_recorder=timing_recorder,
+            )
+            if judge_payload:
+                verdict = merge_judge_verdict(verdict, judge_payload)
+            elif verdict.judge_error:
+                verdict.reason = "judge_error"
+
+        postcheck_meta = verdict.to_dict()
+        if self.postcheck_config["log_verdicts"]:
+            print(f"[postcheck] {json.dumps(postcheck_meta, ensure_ascii=False)}")
+        control["postcheck"] = postcheck_meta
+
+        fallback_enabled = self.postcheck_config["react_fallback"]["enabled"]
+        if not verdict.should_fallback_to_react or not verdict.recoverable or not fallback_enabled:
+            control["fallback_triggered"] = False
+            control["final_executor"] = "default_pipeline"
+            if verdict.should_fallback_to_react and not fallback_enabled:
+                control["fallback_reason"] = "react_fallback_disabled"
+            return result
+
+        fallback_orchestrator = self._get_react_fallback_orchestrator()
+        if fallback_orchestrator is None:
+            control["fallback_triggered"] = False
+            control["fallback_reason"] = "react_fallback_unavailable"
+            control["final_executor"] = "default_pipeline"
+            return result
+
+        evidence_summary = self._format_evidence_summary(
+            result.get("search_hits") or [],
+            result.get("retrieved_docs") or [],
+            (domain_api_result or {}).get("answer"),
+        )
+        fallback_context = {
+            "previous_answer": result.get("answer"),
+            "failure_types": verdict.failure_types,
+            "missing_constraints": verdict.missing_constraints,
+            "evidence_summary": evidence_summary,
+            "recovery_goal": self._build_recovery_goal(verdict),
+            "search_hits": result.get("search_hits") or [],
+        }
+        fallback_result = fallback_orchestrator.answer(
+            query,
+            num_search_results=num_search_results,
+            per_source_search_results=per_source_limit,
+            num_retrieved_docs=num_retrieved_docs,
+            max_tokens=max_tokens,
+            temperature=temperature,
+            allow_search=True,
+            reference_limit=reference_limit,
+            force_search=force_search,
+            fallback_context=fallback_context,
+        )
+        fallback_control = fallback_result.setdefault("control", {})
+        fallback_control["postcheck"] = postcheck_meta
+        fallback_control["fallback_triggered"] = True
+        fallback_control["fallback_reason"] = verdict.reason
+        fallback_control["final_executor"] = "react_fallback"
+        return fallback_result
 
     @staticmethod
     def create_react_agent(
@@ -1121,15 +1456,28 @@ def create_langchain_orchestrator(
         if provider:
             from langchain.langchain_llm import create_chat_model
             routing_llm = create_chat_model(provider=provider, config=config)
+
+    # Create post-check judge LLM if configured
+    postcheck_llm = None
+    postcheck_cfg = config.get("postcheck", {})
+    judge_cfg = postcheck_cfg.get("judge", {})
+    if judge_cfg.get("enabled", True):
+        provider = judge_cfg.get("provider") or judge_cfg.get("model")
+        if provider:
+            from langchain.langchain_llm import create_chat_model
+
+            postcheck_llm = create_chat_model(provider=provider, config=config)
     
     return LangChainOrchestrator(
         llm=llm,
         search_client=search_client,
         classifier_llm=classifier_llm,
         routing_llm=routing_llm,
+        postcheck_llm=postcheck_llm,
         google_api_key=config.get("googleSearch", {}).get("api_key") or config.get("GOOGLE_API_KEY"),
         sportsdb_api_key=config.get("SPORTSDB_API_KEY"),
         apisports_api_key=config.get("APISPORTS_KEY"),
+        config=config,
         show_timings=kwargs.pop("show_timings", False),
         **kwargs,
     )

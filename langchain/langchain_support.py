@@ -2,19 +2,9 @@ from __future__ import annotations
 
 import os
 from dataclasses import dataclass
-from typing import List, Optional, Union
+from typing import Any, List, Optional, Union
 
-from langchain_text_splitters import RecursiveCharacterTextSplitter
-from langchain_huggingface import HuggingFaceEmbeddings
-from langchain_community.vectorstores import FAISS
 from langchain_core.documents import Document as LCDocument
-from langchain_community.document_loaders import (
-    DirectoryLoader,
-    PyPDFLoader,
-    TextLoader,
-    UnstructuredMarkdownLoader,
-)
-from langchain_community.document_loaders.base import BaseLoader
 
 
 @dataclass
@@ -48,9 +38,9 @@ class LangChainFileReader:
     
     # Mapping of file extensions to LangChain loaders
     LOADER_MAPPING = {
-        ".pdf": (PyPDFLoader, {}),
-        ".txt": (TextLoader, {"encoding": "utf-8"}),
-        ".md": (UnstructuredMarkdownLoader, {}),
+        ".pdf": ("langchain_community.document_loaders", "PyPDFLoader", {}),
+        ".txt": ("langchain_community.document_loaders", "TextLoader", {"encoding": "utf-8"}),
+        ".md": ("langchain_community.document_loaders", "UnstructuredMarkdownLoader", {}),
     }
     
     def __init__(self, path: str, recursive: bool = True) -> None:
@@ -74,7 +64,9 @@ class LangChainFileReader:
                 
                 if ext in self.LOADER_MAPPING:
                     try:
-                        loader_cls, loader_kwargs = self.LOADER_MAPPING[ext]
+                        module_name, class_name, loader_kwargs = self.LOADER_MAPPING[ext]
+                        module = __import__(module_name, fromlist=[class_name])
+                        loader_cls = getattr(module, class_name)
                         loader = loader_cls(file_path, **loader_kwargs)
                         lc_docs = loader.load()
                         
@@ -101,7 +93,9 @@ class LangChainFileReader:
                 
                 if ext in self.LOADER_MAPPING:
                     try:
-                        loader_cls, loader_kwargs = self.LOADER_MAPPING[ext]
+                        module_name, class_name, loader_kwargs = self.LOADER_MAPPING[ext]
+                        module = __import__(module_name, fromlist=[class_name])
+                        loader_cls = getattr(module, class_name)
                         loader = loader_cls(file_path, **loader_kwargs)
                         documents.extend(loader.load())
                     except Exception as exc:
@@ -132,12 +126,15 @@ class LangChainVectorStore:
         self.model_name = model_name
         self.chunk_size = chunk_size
         self.chunk_overlap = chunk_overlap
+        from langchain_huggingface import HuggingFaceEmbeddings
+        from langchain_text_splitters import RecursiveCharacterTextSplitter
+
         self._embedder = HuggingFaceEmbeddings(model_name=model_name)
         self._splitter = RecursiveCharacterTextSplitter(
             chunk_size=self.chunk_size,
             chunk_overlap=self.chunk_overlap,
         )
-        self._store: Optional[FAISS] = None
+        self._store: Optional[Any] = None
 
     def index(self, documents: Union[List[Document], List[LCDocument]]) -> int:
         """Index a list of documents and return the number of chunks stored.
@@ -158,6 +155,8 @@ class LangChainVectorStore:
         if not split_docs:
             self._store = None
             return 0
+
+        from langchain_community.vectorstores import FAISS
 
         self._store = FAISS.from_documents(split_docs, self._embedder)
         return len(split_docs)
@@ -216,6 +215,8 @@ class LangChainVectorStore:
     ) -> "LangChainVectorStore":
         """Load a vector store from disk."""
         instance = cls(model_name=model_name)
+        from langchain_community.vectorstores import FAISS
+
         instance._store = FAISS.load_local(
             folder_path,
             instance._embedder,

@@ -698,46 +698,9 @@ def main() -> None:
     else:
         # Use LangChain-based orchestrator (default)
         if config.get("orchestrator_mode") == "react":
-            # Use React Agent orchestrator
-            if not LANGCHAIN_AVAILABLE:
-                print("[main] LangChain not available, cannot use react mode")
-                print("[main] Falling back to legacy orchestrator")
-                llm_client = build_llm_client(config)
-                classifier_client = build_domain_classifier_client(config)
-                routing_client = build_routing_keywords_client(config)
+            print("[main] orchestrator_mode=react is deprecated as a top-level mode; using LangChain orchestrator with ReAct fallback")
 
-                orchestrator = SmartSearchOrchestrator(
-                    llm_client=llm_client,
-                    apisports_api_key=apisports_key_cli,
-                    classifier_llm_client=classifier_client,
-                    routing_llm_client=routing_client,
-                    search_client=search_client,
-                    data_path=args.data_path,
-                    reranker=reranker,
-                    min_rerank_score=min_rerank_score,
-                    max_per_domain=max_per_domain,
-                    requested_search_sources=requested_sources,
-                    active_search_sources=active_sources,
-                    active_search_source_labels=active_labels,
-                    missing_search_sources=missing_sources,
-                    configured_search_sources=configured_sources,
-                    show_timings=show_timings,
-                    google_api_key=google_key_cli,
-                    sportsdb_api_key=sportsdb_key_cli,
-                    config=config,
-                )
-            else:
-                print("[main] Using React Agent orchestrator")
-                from langchain.langchain_llm import create_chat_model
-                from orchestrators.react_agent_orchestrator import ReactAgentOrchestrator
-
-                llm = create_chat_model(config=config)
-                orchestrator = ReactAgentOrchestrator.create_from_config(
-                    config=config,
-                    llm=llm,
-                    search_client=search_client,
-                )
-        elif not LANGCHAIN_AVAILABLE:
+        if not LANGCHAIN_AVAILABLE:
             print("[main] LangChain not available, falling back to legacy orchestrator")
             llm_client = build_llm_client(config)
             classifier_client = build_domain_classifier_client(config)

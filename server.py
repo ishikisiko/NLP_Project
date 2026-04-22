@@ -235,13 +235,7 @@ def build_pipeline(
     show_timings = bool(config.get("displayResponseTimes", False))
 
     if config.get("orchestrator_mode") == "react":
-        from orchestrators.react_agent_orchestrator import ReactAgentOrchestrator
-        print("[server] Using React Agent orchestrator")
-        return ReactAgentOrchestrator.create_from_config(
-            config=config,
-            llm=llm,
-            search_client=search_client,
-        )
+        print("[server] orchestrator_mode=react is deprecated as a top-level mode; using LangChain orchestrator with ReAct fallback")
 
     return create_langchain_orchestrator(
         config=config,
@@ -273,7 +267,8 @@ def health() -> Any:
         config = copy.deepcopy(load_base_config())
         return jsonify({
             "status": "ok",
-            "orchestrator_mode": config.get("orchestrator_mode", "langchain"),
+            "orchestrator_mode": "langchain",
+            "requested_orchestrator_mode": config.get("orchestrator_mode", "langchain"),
         })
     except Exception as exc:
         return jsonify({

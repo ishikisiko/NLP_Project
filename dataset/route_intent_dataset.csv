@@ -1,0 +1,32 @@
+
+qid,query,intent_label,expected_route
+route001,What is the speed of light?,general_knowledge,general_web
+route002,"What is the weather in Bend, Oregon today?",weather,weather_api
+route003,Convert 10 miles to kilometers.,unit_conversion,calculator
+route004,What time is it in Tokyo right now?,time,time_api
+route005,How are you doing today?,small_talk,chat
+route006,Summarize the cause of the French Revolution.,summary_request,general_web
+route007,Latest news on climate change.,news_request,general_web
+route008,When is the next NBA game for the Golden State Warriors?,sports,sports_api
+route009,What is the current price of Apple stock?,finance,finance_api
+route010,Calculate 5 factorial.,math_calculation,calculator
+route011,Translate “good morning” to Spanish.,translation,translation_api
+route012,Who is the current CEO of Tesla?,general_knowledge,general_web
+route013,Tell me a joke.,small_talk,chat
+route014,Write a Python function to reverse a string.,code_request,code_execution
+route015,Population of Canada.,general_knowledge,general_web
+route016,When did World War II end?,general_knowledge,general_web
+route017,What are the benefits of vitamin D?,health,general_web
+route018,How to cook spaghetti carbonara?,recipe,general_web
+route019,Find coffee shops near me.,local_search,general_web
+route020,What is photosynthesis?,general_knowledge,general_web
+route021,When is Thanksgiving in 2026?,date_query,general_web
+route022,Convert 98°F to Celsius.,unit_conversion,calculator
+route023,Explain the concept of blockchain.,general_knowledge,general_web
+route024,What is 50 USD in EUR?,currency_conversion,calculator
+route025,Who won the Oscar for Best Picture in 2025?,entertainment,general_web
+route026,Describe photosynthesis in simple terms.,general_knowledge,general_web
+route027,Is it raining in New York?,weather,weather_api
+route028,What is the square root of 256?,math_calculation,calculator
+route029,Who founded Microsoft?,general_knowledge,general_web
+route030,Tell me the latest score of the Lakers game.,sports,sports_api

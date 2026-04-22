@@ -19,6 +19,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from langchain.langchain_react_tools import (
     create_react_tools_from_config,
     ReActSearchTool,
+    ReActSearchRecoveryTool,
     ReActDomainTool,
     ReActLocalDocTool,
 )
@@ -92,6 +93,7 @@ class ReactAgentOrchestrator:
         reference_limit: Optional[int] = None,
         force_search: bool = False,
         images: Optional[List[Dict[str, str]]] = None,
+        fallback_context: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
         """Answer a query using ReAct agent.
 
@@ -115,7 +117,7 @@ class ReactAgentOrchestrator:
 
         try:
             # Build input for the agent
-            agent_input = {"input": query}
+            agent_input = {"input": self._build_agent_input(query, fallback_context)}
 
             # Execute the agent
             result = self._agent_executor.invoke(agent_input)
@@ -129,7 +131,7 @@ class ReactAgentOrchestrator:
             response: Dict[str, Any] = {
                 "query": query,
                 "answer": output,
-                "search_hits": search_hits,
+                "search_hits": search_hits or list(fallback_context.get("search_hits") or []) if fallback_context else search_hits,
                 "llm_raw": None,
                 "llm_warning": None,
                 "llm_error": None,
@@ -140,15 +142,19 @@ class ReactAgentOrchestrator:
                 "search_performed": len(search_hits) > 0,
                 "decision": {
                     "needs_search": len(search_hits) > 0,
-                    "reason": "react_agent_iteration",
+                    "reason": "react_agent_iteration" if not fallback_context else "react_fallback_iteration",
                 },
-                "search_mode": "react_agent",
+                "search_mode": "react_agent" if not fallback_context else "react_fallback",
                 "keywords": [],
                 "hybrid_mode": False,
                 "local_docs_present": self._has_local_docs_tool(),
                 "search_allowed": allow_search,
                 "max_iterations": self.max_iterations,
+                "final_executor": "react_fallback" if fallback_context else "react_agent",
+                "fallback_triggered": bool(fallback_context),
             }
+            if fallback_context:
+                control["fallback_context"] = self._fallback_context_meta(fallback_context)
 
             response["control"] = control
 
@@ -190,11 +196,61 @@ class ReactAgentOrchestrator:
         # This is a placeholder that can be enhanced if needed
         return []
 
+    def _build_agent_input(
+        self,
+        query: str,
+        fallback_context: Optional[Dict[str, Any]],
+    ) -> str:
+        """Build the ReAct agent input, optionally with fallback context."""
+        if not fallback_context:
+            return query
+
+        lines = [
+            f"Original Query:\n{query}",
+            "",
+            "You are acting as a recovery agent. Improve the previous answer using tools only when needed.",
+        ]
+
+        previous_answer = str(fallback_context.get("previous_answer") or "").strip()
+        if previous_answer:
+            lines.extend(["", f"Previous Answer:\n{previous_answer}"])
+
+        failure_types = fallback_context.get("failure_types") or []
+        if failure_types:
+            lines.extend(["", f"Post-check Failure Types: {', '.join(map(str, failure_types))}"])
+
+        missing_constraints = fallback_context.get("missing_constraints") or []
+        if missing_constraints:
+            lines.extend(["", f"Missing Constraints: {', '.join(map(str, missing_constraints))}"])
+
+        evidence_summary = str(fallback_context.get("evidence_summary") or "").strip()
+        if evidence_summary:
+            lines.extend(["", f"Available Evidence Summary:\n{evidence_summary}"])
+
+        recovery_goal = str(fallback_context.get("recovery_goal") or "").strip()
+        if recovery_goal:
+            lines.extend(["", f"Recovery Goal:\n{recovery_goal}"])
+
+        return "\n".join(lines)
+
+    def _fallback_context_meta(self, fallback_context: Dict[str, Any]) -> Dict[str, Any]:
+        """Return safe metadata about the fallback context."""
+        return {
+            "failure_types": list(fallback_context.get("failure_types") or []),
+            "missing_constraints": list(fallback_context.get("missing_constraints") or []),
+            "has_previous_answer": bool(fallback_context.get("previous_answer")),
+            "has_evidence_summary": bool(fallback_context.get("evidence_summary")),
+        }
+
     def _has_local_docs_tool(self) -> bool:
         """Check if local docs tool is available."""
         return any(
             isinstance(t, ReActLocalDocTool) for t in self.tools
         )
+
+    def _has_search_recovery_tool(self) -> bool:
+        """Check if high-level search recovery tool is available."""
+        return any(isinstance(t, ReActSearchRecoveryTool) for t in self.tools)
 
     @classmethod
     def create_from_config(

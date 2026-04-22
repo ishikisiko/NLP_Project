@@ -1,7 +1,8 @@
 """ReAct tools for LangChain agents.
 
-This module wraps existing search, domain API, and local doc tools as LangChain BaseTool
-implementations suitable for use with ReAct agents.
+This module wraps existing search, domain API, local doc, and high-level search
+recovery tools as LangChain BaseTool implementations suitable for use with
+ReAct agents.
 """
 
 from __future__ import annotations
@@ -19,6 +20,7 @@ from pydantic import BaseModel, Field
 # Add parent directory to path for imports
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
+from langchain.langchain_rag import SearchRAGChain
 from search.search import SearchClient, SearchHit
 from search.source_selector import IntelligentSourceSelector
 from rag.local_rag import LocalRAG
@@ -28,6 +30,11 @@ from utils.timing_utils import TimingRecorder
 class WebSearchInput(BaseModel):
     """Input schema for web search tool."""
     query: str = Field(description="The search query to execute")
+
+
+class SearchRecoveryInput(BaseModel):
+    """Input schema for high-level search recovery tool."""
+    query: str = Field(description="The search recovery query to execute")
 
 
 class DomainApiInput(BaseModel):
@@ -85,6 +92,111 @@ class ReActSearchTool(BaseTool):
             results.append(result)
 
         return "\n\n".join(results)
+
+
+class ReActSearchRecoveryTool(BaseTool):
+    """High-level SearchRAG recovery tool for ReAct fallback."""
+
+    name: str = "search_recovery"
+    description: str = (
+        "Run a high-level recovery search that reuses the default search RAG pipeline, "
+        "including search, reranking, optional local document retrieval, and answer synthesis. "
+        "Use this when the current answer is missing evidence, missing constraints, or needs a better synthesis."
+    )
+    args_schema: Type[BaseModel] = SearchRecoveryInput
+    return_direct: bool = False
+
+    llm: Any = Field(exclude=True)
+    search_client: SearchClient = Field(exclude=True)
+    data_path: Optional[str] = Field(default=None, exclude=True)
+    reranker: Optional[Any] = Field(default=None, exclude=True)
+    min_rerank_score: float = Field(default=0.0, exclude=True)
+    max_per_domain: int = Field(default=1, exclude=True)
+
+    class Config:
+        arbitrary_types_allowed = True
+
+    def __init__(
+        self,
+        llm: BaseChatModel,
+        search_client: SearchClient,
+        *,
+        data_path: Optional[str] = None,
+        reranker: Optional[Any] = None,
+        min_rerank_score: float = 0.0,
+        max_per_domain: int = 1,
+        **kwargs: Any,
+    ) -> None:
+        super().__init__(
+            llm=llm,
+            search_client=search_client,
+            data_path=data_path,
+            reranker=reranker,
+            min_rerank_score=min_rerank_score,
+            max_per_domain=max_per_domain,
+            **kwargs,
+        )
+        self._rag_chain: Optional[SearchRAGChain] = None
+        self._last_payload: Optional[Dict[str, Any]] = None
+
+    def _get_chain(self) -> SearchRAGChain:
+        if self._rag_chain is None:
+            self._rag_chain = SearchRAGChain(
+                llm=self.llm,
+                search_client=self.search_client,
+                data_path=self.data_path,
+                reranker=self.reranker,
+                min_rerank_score=self.min_rerank_score,
+                max_per_domain=self.max_per_domain,
+            )
+        return self._rag_chain
+
+    def _run(
+        self,
+        query: str,
+        run_manager: Optional[CallbackManagerForToolRun] = None,
+    ) -> str:
+        try:
+            result = self._get_chain().answer(
+                query,
+                search_query=query,
+                num_search_results=5,
+                per_source_limit=5,
+                num_retrieved_docs=3,
+                max_tokens=1200,
+                temperature=0.2,
+                enable_search=True,
+                enable_local_docs=True,
+            )
+            self._last_payload = result
+            return self._format_payload(result)
+        except Exception as exc:
+            return f"Search recovery failed: {exc}"
+
+    def _format_payload(self, payload: Dict[str, Any]) -> str:
+        answer = str(payload.get("answer") or "").strip()
+        search_hits = payload.get("search_hits") or []
+        retrieved_docs = payload.get("retrieved_docs") or []
+
+        parts: List[str] = []
+        if answer:
+            parts.append(f"Recovered Answer:\n{answer}")
+
+        if search_hits:
+            parts.append("Evidence Summary:")
+            for index, hit in enumerate(search_hits[:5], start=1):
+                title = hit.get("title") or f"Result {index}"
+                url = hit.get("url") or "N/A"
+                snippet = hit.get("snippet") or ""
+                parts.append(f"{index}. {title}\n   URL: {url}\n   {snippet}")
+
+        if retrieved_docs:
+            parts.append("Local Documents:")
+            for index, doc in enumerate(retrieved_docs[:3], start=1):
+                source = doc.get("source") or f"Document {index}"
+                parts.append(f"{index}. {source}")
+
+        return "\n\n".join(parts) if parts else "Search recovery completed but returned no evidence."
 
 
 class ReActDomainTool(BaseTool):
@@ -302,9 +414,33 @@ def create_react_tools_from_config(
     """
     tools: List[BaseTool] = []
 
-    # Create search tool if search client is available
+    reranker = None
+    rerank_cfg = config.get("rerank") or {}
+    min_rerank_score = float(rerank_cfg.get("min_score", 0.0))
+    max_per_domain = max(1, int(rerank_cfg.get("max_per_domain", 1)))
+
+    if llm and rerank_cfg and (config.get("RERANK_PROVIDER") or rerank_cfg.get("provider")):
+        try:
+            from langchain.langchain_rerank import create_search_reranker
+
+            reranker = create_search_reranker(config=config, min_score=min_rerank_score)
+        except Exception:
+            reranker = None
+
+    # Create search tools if search client is available
     if search_client:
         tools.append(ReActSearchTool(search_client=search_client))
+        if llm:
+            tools.append(
+                ReActSearchRecoveryTool(
+                    llm=llm,
+                    search_client=search_client,
+                    data_path=data_path,
+                    reranker=reranker,
+                    min_rerank_score=min_rerank_score,
+                    max_per_domain=max_per_domain,
+                )
+            )
 
     # Create domain API tool
     try:

@@ -1,0 +1,17 @@
+
+qid,query,need_search,need_fulltext,reason
+trigger001,Why is Mars called the Red Planet?,True,True,"The explanation for the Red Planet nickname (iron oxide in dust and rocks) typically appears within the main text of articles, not in short snippets."
+trigger002,Who discovered penicillin?,True,False,"Short summaries or snippets often mention that Alexander Fleming discovered penicillin in 1928, so the full article is not always required."
+trigger003,What is the boiling point of water at sea level?,True,False,Temperature facts for water boiling point are widely available in short snippets and tables; the summary usually suffices.
+trigger004,When did the Titanic sink?,True,False,Date information for major historical events like the Titanic’s sinking is typically present in summaries.
+trigger005,Where did the Titanic sink?,True,True,"The exact location (North Atlantic, 400 miles south of Newfoundland) usually requires reading beyond the snippet."
+trigger006,When was Google Inc. founded?,True,True,Details about Google’s founding and the role of Andy Bechtolsheim are discussed in the body of official company history pages.
+trigger007,Which planet is the largest in the solar system?,True,False,Simple facts such as Jupiter being the largest planet are typically available in summaries or quick facts sections.
+trigger008,What is the official currency of Japan?,True,True,"To confirm the official status of the yen, it’s safer to open the full article rather than relying on search snippets."
+trigger009,When is International Men’s Day celebrated?,True,True,"The date is sometimes present in snippets, but the official IMD website provides the full context, which is better verified by reading the page."
+trigger010,Who painted the Mona Lisa?,True,False,Most snippets clearly state that Leonardo da Vinci painted the Mona Lisa.
+trigger011,What is the longest river in the world?,True,False,Information identifying the Nile as the longest river and its approximate length often appears in encyclopaedia summaries.
+trigger012,What is the speed of light?,True,False,The numeric value of the speed of light is usually provided in snippets and tables.
+trigger013,Who was the first human to walk on the Moon?,True,False,The fact that Neil Armstrong was the first person on the Moon is widely available in summaries.
+trigger014,Where is the Mona Lisa displayed?,True,True,Confirming that the Mona Lisa hangs in the Louvre behind bulletproof glass often requires reading the article’s body.
+trigger015,Name the seven continents.,True,False,Lists of the seven continents are usually available in snippet lists or simple tables.

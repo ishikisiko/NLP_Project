@@ -2,6 +2,19 @@
     "displayResponseTimes": true,
     "LLM_PROVIDER": "zai",
     "orchestrator_mode": "langchain",
+    "postcheck": {
+        "enabled": false,
+        "log_verdicts": false,
+        "judge": {
+            "enabled": true,
+            "provider": "zai",
+            "model": "glm-4.5-air"
+        },
+        "react_fallback": {
+            "enabled": false,
+            "max_iterations": 4
+        }
+    },
     "reactAgent": {
         "max_iterations": 5
     },

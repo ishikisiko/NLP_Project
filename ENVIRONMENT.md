@@ -59,13 +59,13 @@ python main.py "your query" --mode local --data-path ./uploads
 Run the automated tests from the activated `env1` environment:
 
 ```bash
-pytest -q
+env1/bin/pytest -q
 ```
 
 If you want a more targeted run:
 
 ```bash
-pytest tests/test_search_provider_migration.py -q
+env1/bin/pytest tests/test_search_provider_migration.py -q
 ```
 
 ## Notes

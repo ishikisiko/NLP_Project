@@ -271,10 +271,22 @@ python server.py
 
 ### 5.2 测试方式
 
-#### 5.2.1 批量测试
+#### 5.2.1 回归评测
 ```bash
-# 使用批量测试脚本
-python tests/batch_test.py --queries-file ./queries.txt --search on --pretty
+# 混合路由回归（small talk / domain API / web / local RAG）
+env1/bin/python tests/search_quality_pipeline.py collect \
+  --queries-file tests/search_quality_minimal_queries.txt \
+  --output-file tests/search_quality_regression_run.json \
+  --num-results 5 \
+  --show-timings
+
+# 搜索质量标注集（强制搜索，便于人工判断检索结果）
+env1/bin/python tests/search_quality_pipeline.py collect \
+  --queries-file tests/search_quality_minimal_search_queries.txt \
+  --output-file tests/search_quality_annotations.json \
+  --num-results 5 \
+  --force-search \
+  --show-timings
 ```
 
 ### 5.3 部署方式

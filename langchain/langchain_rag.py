@@ -56,6 +56,30 @@ If specific information is not found, clearly state '未在搜索结果或本地
 When unsure, acknowledge the uncertainty instead of guessing.
 Always answer in the same language as the user's question."""
 
+DEFAULT_DIRECT_FALLBACK_SYSTEM_PROMPT = """You are a knowledgeable assistant.
+Answer clearly based on your existing knowledge.
+Always answer in the same language as the user's question."""
+
+
+class NullSearchClient(SearchClient):
+    """No-op search client used to keep a single primary execution path."""
+
+    source_id = "null"
+    display_name = "Disabled Search"
+
+    def search(
+        self,
+        query: str,
+        num_results: int = 5,
+        *,
+        per_source_limit: Optional[int] = None,
+        freshness: Optional[str] = None,
+        date_restrict: Optional[str] = None,
+    ) -> List[SearchHit]:
+        _ = (query, num_results, per_source_limit, freshness, date_restrict)
+        self._reset_timings()
+        return []
+
 
 class LocalRAGChain:
     """Local RAG pipeline using LangChain LCEL.
@@ -626,30 +650,34 @@ class SearchRAGChain:
         retrieved_docs: List[Document] = []
         if enable_local_docs and self.vector_store:
             retrieved_docs = self.vector_store.search(query, k=num_retrieved_docs)
-        
-        # Build prompt context
-        search_context = self._format_search_hits(hits)
-        local_context = self._format_local_docs(retrieved_docs)
-        
-        prompt_parts = [f"Question: {query}\n\n"]
-        if search_context:
-            prompt_parts.append(f"Web Search Results:\n{search_context}\n\n")
-        if local_context:
-            prompt_parts.append(f"Local Documents:\n{local_context}\n\n")
-        
-        if extra_context:
-            prompt_parts.append(f"Additional Context (Domain Data):\n{extra_context}\n\n")
-            
-        prompt_parts.append(
-            "Based on the above information, please answer the question. "
-            "If information is insufficient, acknowledge it."
-        )
-        
-        user_prompt = "".join(prompt_parts)
-        
+
+        has_retrieval_context = bool(hits or retrieved_docs or extra_context)
+        if has_retrieval_context:
+            search_context = self._format_search_hits(hits)
+            local_context = self._format_local_docs(retrieved_docs)
+
+            prompt_parts = [f"Question: {query}\n\n"]
+            if search_context:
+                prompt_parts.append(f"Web Search Results:\n{search_context}\n\n")
+            if local_context:
+                prompt_parts.append(f"Local Documents:\n{local_context}\n\n")
+
+            if extra_context:
+                prompt_parts.append(f"Additional Context (Domain Data):\n{extra_context}\n\n")
+
+            prompt_parts.append(
+                "Based on the above information, please answer the question. "
+                "If information is insufficient, acknowledge it."
+            )
+            user_prompt = "".join(prompt_parts)
+            system_prompt = self.system_prompt
+        else:
+            user_prompt = query
+            system_prompt = DEFAULT_DIRECT_FALLBACK_SYSTEM_PROMPT
+
         # Build messages
         messages = [
-            SystemMessage(content=self.system_prompt),
+            SystemMessage(content=system_prompt),
         ]
         
         # Handle images for multimodal

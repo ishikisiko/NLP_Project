@@ -232,28 +232,115 @@ python main.py "your query here" \
 - `--pretty`: Pretty print the JSON response
 - `--disable-rerank`: Skip reranking even if configured
 
-### Batch Testing Multiple Queries
+## Search Quality Evaluation
 
-You can exercise the orchestrator against a list of simple queries stored in a UTF-8 text file (one per line) using the batch runner:
+You can evaluate retrieval quality in two steps:
+
+The repository includes:
+- `tests/search_quality_minimal_dataset.csv`: 20-query grouped starter dataset
+- `tests/search_quality_minimal_queries.txt`: full query list in dataset order
+- `tests/search_quality_minimal_search_queries.txt`: search-oriented subset for `collect`
+- `tests/search_quality_local_chunk_template.csv`: local-RAG chunk annotation template
+
+You can inspect a single category or a single sample directly:
 
 ```bash
-# queries.txt contains one query per line; blank lines or lines starting with # are ignored
-python batch_test.py --queries-file ./queries.txt --search on --pretty
+env1/bin/python tests/search_quality_pipeline.py dataset --list-categories
+env1/bin/python tests/search_quality_pipeline.py dataset --category local_rag
+env1/bin/python tests/search_quality_pipeline.py dataset --query-id Q018
+env1/bin/python tests/search_quality_pipeline.py dataset --category web_search_fulltext --queries-only
 ```
 
-Key flags:
-- `--config`: optional path to an alternate `config.json` (otherwise `NLP_CONFIG_PATH` or the project root config is used)
-- `--data-path`: directory for local RAG documents
-- `--provider`: temporarily override the LLM provider for this batch
-- `--disable-rerank`: force reranking off even if configured
-- `--pretty`: pretty-print the full JSON output per query (omit for concise answers)
+You can also merge layered CSV benchmarks under `dataset/` into one unified file:
 
-This is useful for quick regression checks before UI deployments or backend changes.
+```bash
+env1/bin/python tests/search_quality_pipeline.py map-external \
+  --dataset-dir dataset \
+  --output-file tests/search_quality_external_merged.csv \
+  --queries-output-file tests/search_quality_external_search_queries.txt
+```
+
+1. Collect top search results for a query set:
+   ```bash
+   env1/bin/python tests/search_quality_pipeline.py collect \
+     --queries-file tests/search_quality_minimal_search_queries.txt \
+     --output-file tests/search_quality_annotations.json \
+     --num-results 5 \
+     --force-search
+   ```
+
+2. Open the generated JSON and fill the `judgment` field for each query.
+
+Detailed mode:
+- Set `annotation_complete` to `true`
+- Keep `judgment_mode` as `"detailed"`
+- Fill `relevant_ranks` and/or `relevant_urls`
+
+Lightweight mode:
+- Set `annotation_complete` to `true`
+- Set `judgment_mode` to `"top3_only"`
+- Fill `top3_has_answer_evidence`
+
+Then compute metrics:
+
+```bash
+env1/bin/python tests/search_quality_pipeline.py evaluate \
+  --annotations-file tests/search_quality_annotations.json \
+  --output-file tests/search_quality_report.json
+```
+
+The report includes:
+- `route_correct`
+- `fulltext_decision_correct`
+- `Hit@3`
+- `Hit@5`
+- `chunk_hit_at_5`
+- `MRR`
+- `avg_unique_useful_results`
+- `answer_correctness`
+- `answer_completeness`
+- `answer_groundedness`
+- `abstention_quality`
+
+### Quick Regression Runs
+
+Use the same `search_quality_pipeline.py` entrypoint for mixed-route regression and search-only judging.
+
+Mixed-route regression across small talk, domain APIs, web search, and local RAG:
+
+```bash
+env1/bin/python tests/search_quality_pipeline.py collect \
+  --queries-file tests/search_quality_minimal_queries.txt \
+  --output-file tests/search_quality_regression_run.json \
+  --num-results 5 \
+  --show-timings
+```
+
+Search-focused judging set with forced retrieval:
+
+```bash
+env1/bin/python tests/search_quality_pipeline.py collect \
+  --queries-file tests/search_quality_minimal_search_queries.txt \
+  --output-file tests/search_quality_annotations.json \
+  --num-results 5 \
+  --force-search \
+  --show-timings
+```
+
+For larger web-heavy regression, reuse the merged external query list:
+
+```bash
+env1/bin/python tests/search_quality_pipeline.py collect \
+  --queries-file tests/search_quality_external_search_queries.txt \
+  --output-file tests/search_quality_external_run.json \
+  --num-results 5 \
+  --force-search
+```
 
 ## Testing
 
 Run the automated tests from the activated `env1` environment:
 
 ```bash
-pytest -q
+env1/bin/pytest -q
 ```

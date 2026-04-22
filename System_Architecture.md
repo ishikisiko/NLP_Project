@@ -140,7 +140,7 @@ sequenceDiagram
 
 ### 4. Agent Workflow与多步推理 (Agent Workflow & Multi-step Reasoning)
 
-`orchestrators/smart_orchestrator.py` 中的 `SmartSearchOrchestrator` 充当了系统的“大脑”，协调感知、决策、执行与反思的完整 Agent 工作流。
+当前默认由 `langchain/langchain_orchestrator.py` 中的 `LangChainOrchestrator` 充当系统的主编排器，协调感知、决策、执行与回退的完整 Agent 工作流。`SmartSearchOrchestrator` 保留为兼容路径，不再是默认执行主线。
 
 *   **时间感知与解析 (Time Awareness & Parsing)**:
     内置的 `TimeParser` 工具 (`utils/time_parser.py`) 利用正则表达式能够精准识别自然语言中的时间限制 (如 "最近3天", "past 6 months")。解析出的 `TimeConstraint` 对象会被转换为搜索引擎接受的参数 (如 Google 的 `tbs=qdr:d3` 或 You.com 的 `freshness=month`)，从源头保证信息的时效性。
@@ -150,7 +150,7 @@ sequenceDiagram
     *   **上下文注入 (Context Injection)**: 这是一个关键的中间步骤。如果 Source Selector 获取到了结构化的领域数据 (如 API 返回的股票实时数据)，这些数据会作为 "Pre-context" 注入到 Prompt 中。LLM 被要求优先基于这些硬数据回答，并利用网络搜索结果作为定性补充。
 
 *   **反思与闲聊处理 (Reflection & Small Talk)**:
-    系统内置了 `_looks_like_small_talk` 启发式规则，快速拦截单纯的问候语。对于复杂任务，若单次搜索结果不足以回答，Agent 逻辑允许触发回退机制或生成澄清性追问。
+    系统内置统一的小聊识别与搜索路由逻辑，快速拦截单纯的问候语。对于复杂任务，默认搜索主链路会先生成首答，再通过 post-check 判断是否需要升级到 ReAct fallback 进行补救，而不是直接将 ReAct 作为顶层默认模式。
 
 ### 5. 多模态交互与视觉理解 (Multi-modal Interaction & Visual Understanding)
 

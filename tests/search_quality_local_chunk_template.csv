@@ -1,0 +1,5 @@
+"query_id","query","gold_doc_id","chunk_id","is_gold","faiss_rank","rerank_rank","notes"
+"Q016","这个项目的核心模块有哪些","System_Architecture.md","","","","","补本地 RAG 的 gold chunk 和召回排序"
+"Q017","系统为什么要同时结合网页搜索和本地文档？","System_Architecture.md","","","","","补本地 RAG 的 gold chunk 和召回排序"
+"Q018","文档里对 rerank 的作用是怎么描述的？","System_Architecture.md","","","","","补本地 RAG 的 gold chunk 和召回排序"
+"Q019","文档中对本地 RAG 的 chunk size 和 overlap 是怎么设置的？","System_Architecture.md","","","","","补本地 RAG 的 gold chunk 和召回排序"
