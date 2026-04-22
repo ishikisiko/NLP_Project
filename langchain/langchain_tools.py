@@ -16,10 +16,12 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from search.search import (
     CombinedSearchClient,
+    BraveSearchClient,
+    BrightDataSERPClient,
     GoogleSearchClient,
+    PrioritySearchClient,
     SearchClient,
     SearchHit,
-    SerpAPISearchClient,
     YouSearchClient,
 )
 
@@ -34,7 +36,7 @@ class WebSearchInput(BaseModel):
 class WebSearchTool(BaseTool):
     """LangChain tool wrapper for web search.
     
-    Wraps any SearchClient implementation (SerpAPI, You.com, Google, MCP, Combined)
+    Wraps any SearchClient implementation (Brave, Bright Data, You.com, Google, Combined)
     as a LangChain tool that can be used with agents.
     """
     
@@ -92,17 +94,34 @@ class WebSearchTool(BaseTool):
         return self.search_client.search(query, num_results=num_results, **kwargs)
 
 
-class SerpAPITool(WebSearchTool):
-    """LangChain tool for SerpAPI search."""
+class BrightDataSearchTool(WebSearchTool):
+    """LangChain tool for Bright Data SERP search."""
     
-    name: str = "serpapi_search"
+    name: str = "brightdata_search"
     description: str = (
-        "Search the web using SerpAPI (Google search). "
-        "Best for general web searches with comprehensive results."
+        "Search the web using Bright Data SERP. "
+        "Useful for Google-style search results proxied through Bright Data."
     )
 
-    def __init__(self, api_key: str, **kwargs: Any) -> None:
-        client = SerpAPISearchClient(api_key=api_key)
+    def __init__(self, api_token: str, zone: str, **kwargs: Any) -> None:
+        client = BrightDataSERPClient(api_token=api_token, zone=zone)
+        super().__init__(search_client=client, **kwargs)
+
+
+class BraveSearchTool(WebSearchTool):
+    """LangChain tool for Brave Search."""
+
+    name: str = "brave_search"
+    description: str = (
+        "Search the web using Brave Search. "
+        "Preferred general web search path with primary and fallback keys."
+    )
+
+    def __init__(self, primary_api_key: str, secondary_api_key: Optional[str] = None, **kwargs: Any) -> None:
+        client = BraveSearchClient(
+            primary_api_key=primary_api_key,
+            secondary_api_key=secondary_api_key,
+        )
         super().__init__(search_client=client, **kwargs)
 
 
@@ -162,14 +181,45 @@ def create_search_tool_from_config(config: Dict[str, Any]) -> Optional[WebSearch
         WebSearchTool instance or None if no search providers configured
     """
     clients: List[SearchClient] = []
-    
-    # SerpAPI
-    serp_key = (config.get("SERPAPI_API_KEY") or "").strip()
-    if serp_key:
+    fallback_clients: List[SearchClient] = []
+    brave_client: Optional[SearchClient] = None
+
+    brave_cfg = config.get("braveSearch") or {}
+    brave_primary_key = (brave_cfg.get("primary_api_key") or "").strip()
+    brave_secondary_key = (brave_cfg.get("secondary_api_key") or "").strip()
+    if brave_primary_key:
         try:
-            clients.append(SerpAPISearchClient(api_key=serp_key))
+            brave_client = BraveSearchClient(
+                primary_api_key=brave_primary_key,
+                secondary_api_key=brave_secondary_key or None,
+                base_url=(brave_cfg.get("base_url") or "https://api.search.brave.com/res/v1/web/search"),
+                timeout=int(brave_cfg.get("timeout", 15)),
+                rps=float(brave_cfg.get("rps", 1)),
+                monthly_limit=int(brave_cfg.get("monthly_limit", 2000)),
+                usage_log_path=str(brave_cfg.get("usage_log_path") or "runtime/brave_search_usage.jsonl"),
+            )
         except Exception as exc:
-            print(f"[search tool] SerpAPI disabled: {exc}")
+            print(f"[search tool] Brave Search disabled: {exc}")
+
+    bright_cfg = config.get("brightDataSearch") or {}
+    bright_token = (bright_cfg.get("api_token") or "").strip()
+    bright_zone = (bright_cfg.get("zone") or "").strip()
+    if bright_token and bright_zone:
+        try:
+            fallback_clients.append(
+                BrightDataSERPClient(
+                    api_token=bright_token,
+                    zone=bright_zone,
+                    base_url=(bright_cfg.get("base_url") or "https://api.brightdata.com/request"),
+                    timeout=int(bright_cfg.get("timeout", 20)),
+                    search_url_template=str(
+                        bright_cfg.get("search_url_template")
+                        or "https://www.google.com/search?q={query}"
+                    ),
+                )
+            )
+        except Exception as exc:
+            print(f"[search tool] Bright Data disabled: {exc}")
     
     # You.com
     you_cfg = config.get("youSearch") or {}
@@ -181,7 +231,7 @@ def create_search_tool_from_config(config: Dict[str, Any]) -> Optional[WebSearch
                 you_kwargs["base_url"] = you_cfg["base_url"]
             if you_cfg.get("timeout"):
                 you_kwargs["timeout"] = int(you_cfg["timeout"])
-            clients.append(YouSearchClient(api_key=you_key, **you_kwargs))
+            fallback_clients.append(YouSearchClient(api_key=you_key, **you_kwargs))
         except Exception as exc:
             print(f"[search tool] You.com disabled: {exc}")
     
@@ -196,16 +246,27 @@ def create_search_tool_from_config(config: Dict[str, Any]) -> Optional[WebSearch
                 google_kwargs["gl"] = google_cfg["gl"]
             if google_cfg.get("lr"):
                 google_kwargs["lr"] = google_cfg["lr"]
-            clients.append(GoogleSearchClient(api_key=google_key, cx=google_cx, **google_kwargs))
+            fallback_clients.append(GoogleSearchClient(api_key=google_key, cx=google_cx, **google_kwargs))
         except Exception as exc:
             print(f"[search tool] Google Search disabled: {exc}")
     
+    if brave_client is not None:
+        clients.append(brave_client)
+        if fallback_clients:
+            if len(fallback_clients) > 1:
+                clients.append(CombinedSearchClient(fallback_clients))
+            else:
+                clients.extend(fallback_clients)
+    else:
+        clients.extend(fallback_clients)
+
     if not clients:
         return None
     
     if len(clients) == 1:
         return WebSearchTool(search_client=clients[0])
-    
+    if brave_client is not None:
+        return WebSearchTool(search_client=PrioritySearchClient(clients))
     return CombinedSearchTool(clients=clients)
 
 

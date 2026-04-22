@@ -1,10 +1,15 @@
 from __future__ import annotations
 
 import concurrent.futures
+import hashlib
+import json
+import os
 import re
+import threading
 import time
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional, Set
+from urllib.parse import parse_qs, quote_plus, unquote, urlparse
 
 import requests
 
@@ -86,26 +91,133 @@ class SearchClient:
         raise NotImplementedError
 
 
-class SerpAPISearchClient(SearchClient):
-    """Simple wrapper around the SerpAPI search endpoint."""
+def _strip_html(raw_html: str) -> str:
+    text = re.sub(r"<script.*?>.*?</script>", " ", raw_html, flags=re.IGNORECASE | re.DOTALL)
+    text = re.sub(r"<style.*?>.*?</style>", " ", text, flags=re.IGNORECASE | re.DOTALL)
+    text = re.sub(r"<[^>]+>", " ", text)
+    text = text.replace("&nbsp;", " ")
+    text = text.replace("&amp;", "&")
+    text = text.replace("&quot;", '"')
+    text = text.replace("&#39;", "'")
+    return re.sub(r"\s+", " ", text).strip()
 
-    source_id = "serp"
-    display_name = "SerpAPI"
+
+def _normalize_google_result_url(raw_url: str) -> str:
+    candidate = (raw_url or "").strip()
+    if not candidate:
+        return ""
+    if candidate.startswith("/url?"):
+        parsed = urlparse(candidate)
+        target = parse_qs(parsed.query).get("q", [""])[0]
+        return unquote(target).strip()
+    if candidate.startswith("http://") or candidate.startswith("https://"):
+        return candidate
+    return ""
+
+
+class BrightDataSERPClient(SearchClient):
+    """General web search provider using Bright Data SERP proxy."""
+
+    source_id = "brightdata"
+    display_name = "Bright Data SERP"
 
     def __init__(
         self,
-        api_key: str,
-        base_url: str = "https://serpapi.com/search.json",
-        timeout: int = 15,
-        engine: str = "google",
+        api_token: str,
+        *,
+        zone: str,
+        base_url: str = "https://api.brightdata.com/request",
+        timeout: int = 20,
+        search_url_template: str = "https://www.google.com/search?q={query}",
     ) -> None:
         super().__init__()
-        if not api_key:
-            raise ValueError("SerpAPI API key is required.")
-        self.api_key = api_key
-        self.base_url = base_url
+        if not api_token:
+            raise ValueError("Bright Data API token is required.")
+        if not zone:
+            raise ValueError("Bright Data zone is required.")
+        self.api_token = api_token
+        self.zone = zone
+        self.base_url = base_url.rstrip("/")
         self.timeout = timeout
-        self.engine = engine
+        self.search_url_template = search_url_template
+
+    def _build_target_url(self, query: str) -> str:
+        return self.search_url_template.format(query=quote_plus(query))
+
+    def _extract_response_text(self, response: requests.Response) -> str:
+        content_type = (response.headers.get("Content-Type") or "").lower()
+        if "application/json" not in content_type:
+            return response.text
+
+        try:
+            payload = response.json()
+        except ValueError:
+            return response.text
+
+        if isinstance(payload, dict):
+            for key in ("body", "content", "html", "raw"):
+                value = payload.get(key)
+                if isinstance(value, str) and value.strip():
+                    return value
+            nested = payload.get("result")
+            if isinstance(nested, str) and nested.strip():
+                return nested
+
+        return response.text
+
+    def _extract_hits_from_payload(self, payload: Dict[str, Any], limit: int) -> List[SearchHit]:
+        hits: List[SearchHit] = []
+        seen_urls: Set[str] = set()
+
+        organic = payload.get("organic")
+        if not isinstance(organic, list):
+            return hits
+
+        for entry in organic:
+            if not isinstance(entry, dict):
+                continue
+
+            url = str(entry.get("link") or entry.get("url") or "").strip()
+            title = str(entry.get("title") or "").strip()
+            snippet = str(entry.get("description") or entry.get("snippet") or "").strip()
+
+            if not url or url in seen_urls:
+                continue
+            if not snippet:
+                snippet = title or url
+            if not self._is_valid_search_result(title, url, snippet):
+                continue
+
+            hits.append(SearchHit(title=title or url, url=url, snippet=snippet))
+            seen_urls.add(url)
+            if len(hits) >= limit:
+                break
+
+        return hits
+
+    def _extract_hits_from_html(self, raw_html: str, limit: int) -> List[SearchHit]:
+        hits: List[SearchHit] = []
+        seen_urls: Set[str] = set()
+        anchor_pattern = re.compile(r"<a[^>]+href=\"([^\"]+)\"[^>]*>(.*?)</a>", re.IGNORECASE | re.DOTALL)
+        for href, inner_html in anchor_pattern.findall(raw_html):
+            url = _normalize_google_result_url(href)
+            if not url or url in seen_urls:
+                continue
+
+            title_match = re.search(r"<h3[^>]*>(.*?)</h3>", inner_html, re.IGNORECASE | re.DOTALL)
+            title = _strip_html(title_match.group(1) if title_match else inner_html)
+            snippet = _strip_html(inner_html)
+            if not snippet:
+                snippet = title
+
+            if not self._is_valid_search_result(title, url, snippet):
+                continue
+
+            hits.append(SearchHit(title=title or url, url=url, snippet=snippet or title or url))
+            seen_urls.add(url)
+            if len(hits) >= limit:
+                break
+        return hits
 
     def search(
         self,
@@ -120,42 +232,41 @@ class SerpAPISearchClient(SearchClient):
         start = time.perf_counter()
         error_message: Optional[str] = None
         try:
+            _ = (freshness, date_restrict)
             limit = max(1, int(per_source_limit or num_results))
-            params = {
-                "engine": self.engine,
-                "q": query,
-                "num": limit,
-                "api_key": self.api_key,
+            payload = {
+                "zone": self.zone,
+                "url": self._build_target_url(query),
+                "format": "raw",
             }
-
+            headers = {
+                "Content-Type": "application/json",
+                "Authorization": f"Bearer {self.api_token}",
+            }
             try:
-                response = requests.get(self.base_url, params=params, timeout=self.timeout)
+                response = requests.post(
+                    self.base_url,
+                    json=payload,
+                    headers=headers,
+                    timeout=self.timeout,
+                )
                 response.raise_for_status()
             except requests.RequestException as exc:
                 error_message = str(exc)
-                raise RuntimeError(f"SerpAPI search failed: {exc}") from exc
+                raise RuntimeError(f"Bright Data search failed: {exc}") from exc
 
-            payload = response.json()
-            organic_results = payload.get("organic_results") or []
+            if "application/json" in (response.headers.get("Content-Type") or "").lower():
+                try:
+                    payload = response.json()
+                except ValueError:
+                    payload = None
+                if isinstance(payload, dict):
+                    hits = self._extract_hits_from_payload(payload, limit)
+                    if hits:
+                        return hits
 
-            hits: List[SearchHit] = []
-            for entry in organic_results[:limit]:
-                title = entry.get("title") or ""
-                link = entry.get("link") or entry.get("url") or ""
-                snippet = entry.get("snippet") or entry.get("snippet_highlighted_words") or ""
-                if isinstance(snippet, list):
-                    snippet = " ".join(snippet)
-
-                if title or link or snippet:
-                    if self._is_valid_search_result(title.strip(), link.strip(), snippet.strip()):
-                        hits.append(
-                            SearchHit(
-                                title=title.strip(),
-                                url=link.strip(),
-                                snippet=snippet.strip(),
-                            )
-                        )
-            return hits
+            html_text = self._extract_response_text(response)
+            return self._extract_hits_from_html(html_text, limit)
         except Exception as exc:
             if error_message is None:
                 error_message = str(exc)
@@ -170,6 +281,237 @@ class SerpAPISearchClient(SearchClient):
             if error_message:
                 timing_payload["error"] = error_message
             self._append_timing(timing_payload)
+
+
+class BraveUsageRecorder:
+    """Append-only backend usage log for Brave Search."""
+
+    def __init__(self, log_path: str) -> None:
+        self.log_path = log_path
+        self._lock = threading.Lock()
+
+    def record(self, payload: Dict[str, Any]) -> None:
+        directory = os.path.dirname(self.log_path)
+        if directory:
+            os.makedirs(directory, exist_ok=True)
+        line = json.dumps(payload, ensure_ascii=False)
+        with self._lock:
+            with open(self.log_path, "a", encoding="utf-8") as handle:
+                handle.write(line + "\n")
+
+
+class BraveSearchClient(SearchClient):
+    """Brave Search provider with primary/secondary keys and usage recording."""
+
+    source_id = "brave"
+    display_name = "Brave Search"
+
+    def __init__(
+        self,
+        primary_api_key: str,
+        *,
+        secondary_api_key: Optional[str] = None,
+        base_url: str = "https://api.search.brave.com/res/v1/web/search",
+        timeout: int = 15,
+        rps: float = 1.0,
+        monthly_limit: int = 2000,
+        primary_switch_limit: int = 1500,
+        usage_log_path: str = "runtime/brave_search_usage.jsonl",
+    ) -> None:
+        super().__init__()
+        if not primary_api_key:
+            raise ValueError("Brave Search primary API key is required.")
+        self.base_url = base_url.rstrip("/")
+        self.timeout = timeout
+        self.rps = max(0.1, float(rps))
+        self.monthly_limit = max(1, int(monthly_limit))
+        self.primary_switch_limit = max(1, int(primary_switch_limit))
+        self.usage_recorder = BraveUsageRecorder(usage_log_path)
+        self.usage_log_path = usage_log_path
+        self.slots: Dict[str, str] = {"primary": primary_api_key}
+        if secondary_api_key:
+            self.slots["secondary"] = secondary_api_key
+        self._slot_locks = {slot: threading.Lock() for slot in self.slots}
+        self._last_request_at = {slot: 0.0 for slot in self.slots}
+        self._last_errors: List[Dict[str, str]] = []
+
+    def _get_monthly_usage_count(self, slot: str) -> int:
+        if not self.usage_log_path or not os.path.exists(self.usage_log_path):
+            return 0
+
+        month_prefix = time.strftime("%Y-%m", time.gmtime())
+        count = 0
+        try:
+            with open(self.usage_log_path, "r", encoding="utf-8") as handle:
+                for line in handle:
+                    line = line.strip()
+                    if not line:
+                        continue
+                    try:
+                        payload = json.loads(line)
+                    except ValueError:
+                        continue
+                    if not isinstance(payload, dict):
+                        continue
+                    if payload.get("provider") != self.source_id:
+                        continue
+                    if payload.get("slot") != slot:
+                        continue
+                    timestamp = str(payload.get("timestamp") or "")
+                    if not timestamp.startswith(month_prefix):
+                        continue
+                    count += 1
+        except OSError:
+            return 0
+
+        return count
+
+    def _ordered_slots(self) -> List[str]:
+        slots = list(self.slots.keys())
+        if "primary" in self.slots and "secondary" in self.slots:
+            primary_count = self._get_monthly_usage_count("primary")
+            if primary_count >= self.primary_switch_limit:
+                return ["secondary", "primary"]
+        return slots
+
+    def _respect_rps(self, slot: str) -> None:
+        min_interval = 1.0 / self.rps
+        lock = self._slot_locks[slot]
+        with lock:
+            elapsed = time.perf_counter() - self._last_request_at[slot]
+            if elapsed < min_interval:
+                time.sleep(min_interval - elapsed)
+            self._last_request_at[slot] = time.perf_counter()
+
+    def _record_usage(
+        self,
+        *,
+        slot: str,
+        query: str,
+        success: bool,
+        status_code: Optional[int],
+        result_count: int,
+        fallback_used: bool,
+        error: Optional[str] = None,
+    ) -> None:
+        query_clean = (query or "").strip()
+        payload: Dict[str, Any] = {
+            "timestamp": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+            "provider": self.source_id,
+            "slot": slot,
+            "success": success,
+            "status_code": status_code,
+            "result_count": result_count,
+            "fallback_used": fallback_used,
+            "query_preview": query_clean[:120],
+            "query_hash": hashlib.sha256(query_clean.encode("utf-8")).hexdigest() if query_clean else None,
+            "monthly_limit": self.monthly_limit,
+        }
+        if error:
+            payload["error"] = error
+        self.usage_recorder.record(payload)
+
+    def _extract_hits(self, payload: Dict[str, Any], limit: int) -> List[SearchHit]:
+        web = payload.get("web") if isinstance(payload, dict) else None
+        results = web.get("results") if isinstance(web, dict) else None
+        hits: List[SearchHit] = []
+        if not isinstance(results, list):
+            return hits
+
+        for entry in results:
+            if not isinstance(entry, dict):
+                continue
+            title = str(entry.get("title") or "").strip()
+            url = str(entry.get("url") or "").strip()
+            snippet = str(entry.get("description") or entry.get("snippet") or "").strip()
+            if not (title or url or snippet):
+                continue
+            if self._is_valid_search_result(title, url, snippet):
+                hits.append(SearchHit(title=title or url, url=url, snippet=snippet or title or url))
+            if len(hits) >= limit:
+                break
+        return hits
+
+    def search(
+        self,
+        query: str,
+        num_results: int = 5,
+        *,
+        per_source_limit: Optional[int] = None,
+        freshness: Optional[str] = None,
+        date_restrict: Optional[str] = None,
+    ) -> List[SearchHit]:
+        self._reset_timings()
+        self._last_errors = []
+        limit = max(1, min(int(per_source_limit or num_results), 20))
+        _ = (freshness, date_restrict)
+
+        for slot in self._ordered_slots():
+            api_key = self.slots[slot]
+            start = time.perf_counter()
+            status_code: Optional[int] = None
+            error_message: Optional[str] = None
+            try:
+                self._respect_rps(slot)
+                headers = {
+                    "Accept": "application/json",
+                    "X-Subscription-Token": api_key,
+                }
+                params = {
+                    "q": query,
+                    "count": limit,
+                }
+                response = requests.get(self.base_url, params=params, headers=headers, timeout=self.timeout)
+                status_code = response.status_code
+                response.raise_for_status()
+                payload = response.json()
+                hits = self._extract_hits(payload, limit)
+                self._record_usage(
+                    slot=slot,
+                    query=query,
+                    success=True,
+                    status_code=status_code,
+                    result_count=len(hits),
+                    fallback_used=slot != "primary",
+                )
+                timing_payload: Dict[str, Any] = {
+                    "source": self.source_id,
+                    "label": f"{self.display_name} ({slot})",
+                    "duration_ms": round((time.perf_counter() - start) * 1000, 2),
+                    "slot": slot,
+                }
+                if slot != "primary":
+                    timing_payload["fallback"] = True
+                self._append_timing(timing_payload)
+                return hits
+            except Exception as exc:
+                error_message = str(exc)
+                self._last_errors.append({"source": f"{self.display_name} ({slot})", "error": error_message})
+                self._record_usage(
+                    slot=slot,
+                    query=query,
+                    success=False,
+                    status_code=status_code,
+                    result_count=0,
+                    fallback_used=slot != "primary",
+                    error=error_message,
+                )
+                timing_payload = {
+                    "source": self.source_id,
+                    "label": f"{self.display_name} ({slot})",
+                    "duration_ms": round((time.perf_counter() - start) * 1000, 2),
+                    "slot": slot,
+                    "error": error_message,
+                }
+                if slot != "primary":
+                    timing_payload["fallback"] = True
+                self._append_timing(timing_payload)
+                continue
+
+        return []
+
+    def get_last_errors(self) -> List[Dict[str, str]]:
+        return list(self._last_errors)
 
 
 class FallbackSearchClient(SearchClient):
@@ -534,6 +876,87 @@ class CombinedSearchClient(SearchClient):
         return [result for result, _ in scored_results]
 
 
+class PrioritySearchClient(SearchClient):
+    """Try providers in order and fall back only when earlier providers fail or return no hits."""
+
+    source_id = "priority"
+    display_name = "Priority Search"
+
+    def __init__(self, clients: List[SearchClient]) -> None:
+        super().__init__()
+        if not clients:
+            raise ValueError("At least one search client is required.")
+        self.clients = clients
+        self._last_errors: List[Dict[str, str]] = []
+        self.active_sources: List[str] = [
+            getattr(client, "source_id", type(client).__name__.lower()) for client in clients
+        ]
+        self.active_source_labels: List[str] = [
+            getattr(client, "display_name", type(client).__name__) for client in clients
+        ]
+        self.requested_sources: List[str] = []
+        self.missing_requested_sources: List[str] = []
+        self.configured_sources: List[str] = list(self.active_sources)
+
+    def search(
+        self,
+        query: str,
+        num_results: int = 5,
+        *,
+        per_source_limit: Optional[int] = None,
+        freshness: Optional[str] = None,
+        date_restrict: Optional[str] = None,
+    ) -> List[SearchHit]:
+        self._reset_timings()
+        self._last_errors = []
+        total_limit = max(1, int(num_results))
+        per_source = max(1, int(per_source_limit or total_limit))
+
+        for client in self.clients:
+            try:
+                chunk = client.search(
+                    query,
+                    num_results=total_limit,
+                    per_source_limit=per_source,
+                    freshness=freshness,
+                    date_restrict=date_restrict,
+                ) or []
+            except Exception as exc:
+                self._last_errors.append(
+                    {"source": getattr(client, "display_name", type(client).__name__), "error": str(exc)}
+                )
+                timings_getter = getattr(client, "get_last_timings", None)
+                if callable(timings_getter):
+                    self._last_timings.extend(timings_getter())
+                continue
+
+            timings_getter = getattr(client, "get_last_timings", None)
+            if callable(timings_getter):
+                self._last_timings.extend(timings_getter())
+
+            error_getter = getattr(client, "get_last_errors", None)
+            if callable(error_getter):
+                self._last_errors.extend(error_getter() or [])
+
+            deduped: List[SearchHit] = []
+            seen: Set[str] = set()
+            for hit in chunk:
+                key = (hit.url or f"{hit.title}|{hit.snippet}").strip().lower()
+                if key in seen:
+                    continue
+                seen.add(key)
+                deduped.append(hit)
+                if len(deduped) >= total_limit:
+                    break
+            if deduped:
+                return deduped
+
+        return []
+
+    def get_last_errors(self) -> List[Dict[str, str]]:
+        return list(self._last_errors)
+
+
 class YouSearchClient(SearchClient):
     """Client for the You.com Search API."""
 
@@ -545,6 +968,7 @@ class YouSearchClient(SearchClient):
         api_key: str,
         *,
         base_url: str = "https://api.ydc-index.io/v1/search",
+        contents_base_url: str = "https://api.ydc-index.io/v1/contents",
         timeout: int = 15,
         country: Optional[str] = None,
         safesearch: Optional[str] = "moderate",
@@ -558,6 +982,7 @@ class YouSearchClient(SearchClient):
             raise ValueError("You.com API key is required.")
         self.api_key = api_key
         self.base_url = base_url.rstrip("/")
+        self.contents_base_url = contents_base_url.rstrip("/")
         self.timeout = timeout
         self.country = (country or "").strip().upper() or None
         self.safesearch = (safesearch or "").strip().lower() or None
@@ -565,6 +990,48 @@ class YouSearchClient(SearchClient):
         self.include_news = include_news
         self.default_count = max(1, min(default_count, 100))
         self.extra_params = extra_params or {}
+
+    def fetch_contents(
+        self,
+        urls: List[str],
+        *,
+        content_format: str = "markdown",
+        crawl_timeout: Optional[int] = None,
+    ) -> List[Dict[str, Any]]:
+        cleaned_urls = [str(url).strip() for url in urls if str(url).strip()]
+        if not cleaned_urls:
+            raise ValueError("At least one URL is required for You.com contents fetch.")
+
+        payload: Dict[str, Any] = {
+            "urls": cleaned_urls,
+            "format": content_format,
+        }
+        if crawl_timeout is not None:
+            payload["crawl_timeout"] = int(crawl_timeout)
+
+        headers = {
+            "Content-Type": "application/json",
+            "X-API-Key": self.api_key,
+        }
+        try:
+            response = requests.post(
+                self.contents_base_url,
+                json=payload,
+                headers=headers,
+                timeout=self.timeout,
+            )
+            response.raise_for_status()
+        except requests.RequestException as exc:
+            raise RuntimeError(f"You.com contents fetch failed: {exc}") from exc
+
+        try:
+            body = response.json()
+        except ValueError as exc:
+            raise RuntimeError("You.com contents API returned non-JSON payload") from exc
+
+        if not isinstance(body, list):
+            raise RuntimeError("You.com contents API returned an unexpected payload shape")
+        return body
 
     def _build_params(self, query: str, num_results: int) -> Dict[str, Any]:
         count_value = max(1, min(max(num_results, self.default_count), 100))

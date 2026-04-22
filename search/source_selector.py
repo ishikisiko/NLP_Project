@@ -8,8 +8,15 @@ from datetime import datetime, timedelta
 
 import requests
 
-import yfinance as yf
-from yahoo_fin import stock_info
+try:
+    import yfinance as yf
+except ImportError:  # pragma: no cover - optional dependency
+    yf = None
+
+try:
+    from yahoo_fin import stock_info
+except ImportError:  # pragma: no cover - optional dependency
+    stock_info = None
 
 # Add parent directory to path for imports
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -310,7 +317,7 @@ class IntelligentSourceSelector:
         sources = self.domain_sources.get(domain, [
             {
                 "name": "Default Search",
-                "url": "https://serpapi.com/search",
+                "url": "https://api.search.brave.com/res/v1/web/search",
                 "type": "search_api",
                 "description": "默认搜索引擎"
             }
@@ -2239,6 +2246,8 @@ class IntelligentSourceSelector:
     ) -> Optional[Dict[str, Any]]:
         start = time.perf_counter()
         try:
+            if yf is None:
+                return {"error": "yfinance_not_installed"}
             ticker = yf.Ticker(symbol)
             info = ticker.info
             quote = {
@@ -2270,6 +2279,8 @@ class IntelligentSourceSelector:
     ) -> Optional[Dict[str, Any]]:
         start = time.perf_counter()
         try:
+            if stock_info is None:
+                return {"error": "yahoo_fin_not_installed"}
             c = stock_info.get_live_price(symbol)
             if c is None:
                 raise ValueError("No price data")

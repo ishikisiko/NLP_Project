@@ -10,10 +10,11 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from llm.api import LLMClient, HKGAIClient
 from search.search import (
     CombinedSearchClient,
+    BraveSearchClient,
+    BrightDataSERPClient,
     GoogleSearchClient,
-    MCPWebSearchClient,
+    PrioritySearchClient,
     SearchClient,
-    SerpAPISearchClient,
     YouSearchClient,
 )
 from search.rerank import BaseReranker, Qwen3Reranker
@@ -66,9 +67,9 @@ def build_search_client(
     *,
     sources: Optional[List[str]] = None,
 ) -> Optional[SearchClient]:
-    """Build a search client from config supporting SerpAPI, You.com, Google, and MCP sources."""
+    """Build a search client from config supporting Brave, Bright Data, You.com, and Google."""
 
-    allowed_sources = {"serp", "you", "google"}
+    allowed_sources = {"brave", "brightdata", "you", "google"}
     requested_order: Optional[List[str]] = None
     requested_lookup: Optional[Set[str]] = None
     if sources is not None:
@@ -109,37 +110,66 @@ def build_search_client(
         return client
 
     if isinstance(config_or_key, str):
-        api_key = config_or_key.strip()
-        if not api_key:
-            raise ValueError("SerpAPI API key is required.")
-        if requested_lookup is not None and "serp" not in requested_lookup:
-            return None
-        client = SerpAPISearchClient(api_key=api_key)
-        return apply_metadata(
-            client,
-            active=[client],
-            configured=["serp"],
-            requested=requested_order,
-            missing=[],
-        )
+        raise ValueError("String search backend configuration is no longer supported.")
 
     if not isinstance(config_or_key, dict):
         return None
 
-    clients: List[SearchClient] = []
-    configured_flags: Dict[str, bool] = {"serp": False, "you": False, "google": False}
+    configured_flags: Dict[str, bool] = {
+        "brave": False,
+        "brightdata": False,
+        "you": False,
+        "google": False,
+    }
     missing_requested: List[str] = []
+    fallback_clients: List[SearchClient] = []
+    brave_client: Optional[SearchClient] = None
 
-    serp_key = (config_or_key.get("SERPAPI_API_KEY") or "").strip()
-    if serp_key:
-        configured_flags["serp"] = True
-        if wants("serp"):
+    brave_cfg = config_or_key.get("braveSearch") or {}
+    brave_primary_key = (brave_cfg.get("primary_api_key") or "").strip()
+    brave_secondary_key = (brave_cfg.get("secondary_api_key") or "").strip()
+    if brave_primary_key:
+        configured_flags["brave"] = True
+        if wants("brave"):
             try:
-                clients.append(SerpAPISearchClient(api_key=serp_key))
+                brave_client = BraveSearchClient(
+                    primary_api_key=brave_primary_key,
+                    secondary_api_key=brave_secondary_key or None,
+                    base_url=(brave_cfg.get("base_url") or "https://api.search.brave.com/res/v1/web/search"),
+                    timeout=int(brave_cfg.get("timeout", 15)),
+                    rps=float(brave_cfg.get("rps", 1)),
+                    monthly_limit=int(brave_cfg.get("monthly_limit", 2000)),
+                    primary_switch_limit=int(brave_cfg.get("primary_switch_limit", 1500)),
+                    usage_log_path=str(brave_cfg.get("usage_log_path") or "runtime/brave_search_usage.jsonl"),
+                )
             except Exception as exc:
-                print(f"[search] SerpAPI disabled: {exc}")
-    elif requested_lookup is not None and "serp" in requested_lookup:
-        missing_requested.append("serp")
+                print(f"[search] Brave Search disabled: {exc}")
+    elif requested_lookup is not None and "brave" in requested_lookup:
+        missing_requested.append("brave")
+
+    bright_cfg = config_or_key.get("brightDataSearch") or {}
+    bright_api_token = (bright_cfg.get("api_token") or "").strip()
+    bright_zone = (bright_cfg.get("zone") or "").strip()
+    if bright_api_token and bright_zone:
+        configured_flags["brightdata"] = True
+        if wants("brightdata"):
+            try:
+                fallback_clients.append(
+                    BrightDataSERPClient(
+                        api_token=bright_api_token,
+                        zone=bright_zone,
+                        base_url=(bright_cfg.get("base_url") or "https://api.brightdata.com/request"),
+                        timeout=int(bright_cfg.get("timeout", 20)),
+                        search_url_template=str(
+                            bright_cfg.get("search_url_template")
+                            or "https://www.google.com/search?q={query}"
+                        ),
+                    )
+                )
+            except Exception as exc:
+                print(f"[search] Bright Data disabled: {exc}")
+    elif requested_lookup is not None and "brightdata" in requested_lookup:
+        missing_requested.append("brightdata")
 
     you_cfg = config_or_key.get("youSearch") or {}
     you_key = (you_cfg.get("api_key") or config_or_key.get("YOU_API_KEY") or "").strip()
@@ -150,6 +180,9 @@ def build_search_client(
             base_url = (you_cfg.get("base_url") or "").strip()
             if base_url:
                 you_kwargs["base_url"] = base_url
+            contents_base_url = (you_cfg.get("contents_base_url") or "").strip()
+            if contents_base_url:
+                you_kwargs["contents_base_url"] = contents_base_url
             timeout_raw = you_cfg.get("timeout")
             if timeout_raw is not None:
                 try:
@@ -179,7 +212,7 @@ def build_search_client(
                 you_kwargs["extra_params"] = extra_params
 
             try:
-                clients.append(YouSearchClient(api_key=you_key, **you_kwargs))
+                fallback_clients.append(YouSearchClient(api_key=you_key, **you_kwargs))
             except Exception as exc:
                 print(f"[search] You.com search disabled: {exc}")
     elif requested_lookup is not None and "you" in requested_lookup:
@@ -213,25 +246,41 @@ def build_search_client(
                 google_kwargs["safe"] = safe
 
             try:
-                clients.append(GoogleSearchClient(api_key=google_key, cx=google_cx, **google_kwargs))
+                fallback_clients.append(GoogleSearchClient(api_key=google_key, cx=google_cx, **google_kwargs))
             except Exception as exc:
                 print(f"[search] Google Search disabled: {exc}")
     elif requested_lookup is not None and "google" in requested_lookup:
         missing_requested.append("google")
 
     configured = [source for source, flag in configured_flags.items() if flag]
+    ordered_clients: List[SearchClient] = []
+    metadata_clients: List[SearchClient] = []
+    if brave_client is not None:
+        ordered_clients.append(brave_client)
+        metadata_clients.append(brave_client)
 
-    if not clients:
+    if fallback_clients:
+        metadata_clients.extend(fallback_clients)
+        if requested_lookup is None and brave_client is not None and len(fallback_clients) > 1:
+            ordered_clients.append(CombinedSearchClient(fallback_clients))
+        elif requested_lookup is not None and "brave" in requested_lookup and len(fallback_clients) > 1:
+            ordered_clients.append(CombinedSearchClient(fallback_clients))
+        else:
+            ordered_clients.extend(fallback_clients)
+
+    if not ordered_clients:
         return None
 
-    if len(clients) == 1:
-        client = clients[0]
+    if len(ordered_clients) == 1:
+        client = ordered_clients[0]
+    elif brave_client is not None:
+        client = PrioritySearchClient(ordered_clients)
     else:
-        client = CombinedSearchClient(clients)
+        client = CombinedSearchClient(ordered_clients)
 
     return apply_metadata(
         client,
-        active=clients,
+        active=metadata_clients or ordered_clients,
         configured=configured,
         requested=requested_order,
         missing=missing_requested,
@@ -588,16 +637,15 @@ def main() -> None:
     active_labels: List[str] = []
     missing_sources: List[str] = []
     configured_sources: List[str] = []
-    if (config.get("SERPAPI_API_KEY") or "").strip():
-        configured_sources.append("serp")
+    brave_cfg_cli = config.get("braveSearch") or {}
+    if (brave_cfg_cli.get("primary_api_key") or "").strip():
+        configured_sources.append("brave")
+    bright_cfg_cli = config.get("brightDataSearch") or {}
+    if (bright_cfg_cli.get("api_token") or "").strip() and (bright_cfg_cli.get("zone") or "").strip():
+        configured_sources.append("brightdata")
     you_cfg_cli = config.get("youSearch") or {}
     if (you_cfg_cli.get("api_key") or config.get("YOU_API_KEY") or "").strip():
         configured_sources.append("you")
-    mcp_cfg_cli = (config.get("mcpServers") or {}).get("web-search-prime") or {}
-    if (mcp_cfg_cli.get("url") or "").strip() and any(
-        (mcp_cfg_cli.get("headers") or {}).get(token) for token in ("Authorization", "authorization")
-    ):
-        configured_sources.append("mcp")
     google_cfg_cli = config.get("googleSearch") or {}
     google_key_cli = (google_cfg_cli.get("api_key") or config.get("GOOGLE_API_KEY") or "").strip()
     google_cx_cli = (google_cfg_cli.get("cx") or config.get("GOOGLE_CX") or "").strip()

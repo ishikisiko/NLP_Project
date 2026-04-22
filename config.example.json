@@ -13,10 +13,25 @@
         "provider": "zai",
         "model": "glm-4.5-air"
     },
-    "SERPAPI_API_KEY": "YOUR_SERPAPI_API_KEY_HERE",
     "YOU_API_KEY": "YOUR_YOU_API_KEY_HERE",
     "GOOGLE_API_KEY": "YOUR_GOOGLE_API_KEY_HERE",
     "GOOGLE_CX": "YOUR_GOOGLE_CUSTOM_SEARCH_ENGINE_ID_HERE",
+    "brightDataSearch": {
+        "api_token": "YOUR_BRIGHTDATA_API_TOKEN_HERE",
+        "zone": "serp_api1",
+        "base_url": "https://api.brightdata.com/request",
+        "timeout": 20,
+        "search_url_template": "https://www.google.com/search?q={query}"
+    },
+    "braveSearch": {
+        "primary_api_key": "YOUR_BRAVE_PRIMARY_API_KEY_HERE",
+        "secondary_api_key": "YOUR_BRAVE_SECONDARY_API_KEY_HERE",
+        "base_url": "https://api.search.brave.com/res/v1/web/search",
+        "timeout": 15,
+        "rps": 1,
+        "monthly_limit": 2000,
+        "usage_log_path": "runtime/brave_search_usage.jsonl"
+    },
     "FINNHUB_API_KEY": "",
     "APISPORTS_KEY": "",
     "RAPIDAPI_KEY": "",

@@ -99,7 +99,8 @@ class ReActDomainTool(BaseTool):
     args_schema: Type[BaseModel] = DomainApiInput
     return_direct: bool = False
 
-    source_selector: IntelligentSourceSelector = Field(exclude=True)
+    source_selector: Any = Field(exclude=True)
+    llm: Optional[BaseChatModel] = Field(default=None, exclude=True)
 
     class Config:
         arbitrary_types_allowed = True
@@ -214,6 +215,7 @@ class ReActLocalDocTool(BaseTool):
     return_direct: bool = False
 
     data_path: str = Field(exclude=True)
+    llm: Optional[BaseChatModel] = Field(default=None, exclude=True)
 
     class Config:
         arbitrary_types_allowed = True

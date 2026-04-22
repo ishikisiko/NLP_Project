@@ -38,8 +38,10 @@ class SmartSearchOrchestrator:
         "Always answer in the same language as the user's question."
     )
     SEARCH_SOURCE_LABELS = {
-        "serp": "SerpAPI",
+        "brave": "Brave Search",
+        "brightdata": "Bright Data SERP",
         "you": "You.com",
+        "google": "Google Search",
     }
 
     def __init__(

@@ -29,6 +29,6 @@
 
 ## 5. 测试验证
 
-- [ ] 5.1 单元测试：`ReActSearchTool`、`ReActDomainTool`、`ReActLocalDocTool`
-- [ ] 5.2 集成测试：`ReactAgentOrchestrator.answer()` 完整流程
-- [ ] 5.3 模式切换测试：确认配置切换后行为正确
+- [x] 5.1 单元测试：`ReActSearchTool`、`ReActDomainTool`、`ReActLocalDocTool`
+- [x] 5.2 集成测试：`ReactAgentOrchestrator.answer()` 完整流程
+- [x] 5.3 模式切换测试：确认配置切换后行为正确

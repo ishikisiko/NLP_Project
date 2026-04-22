@@ -5,7 +5,7 @@ This project demonstrates a simple Retrieval-Augmented Generation (RAG) pipeline
 ## LangChain integration
 
 - Local and hybrid RAG now run on LangChain primitives (FAISS + HuggingFace embeddings) for chunking and retrieval.
-- Install the refreshed dependencies (`langchain`, `langchain-community`, `faiss-cpu`) via `pip install -r requirements.txt`.
+- Install the refreshed dependencies (`langchain`, `langchain-community`, `faiss-cpu`, `langchain-huggingface`) via `pip install -r requirements.txt`.
 
 ## Installation
 
@@ -15,10 +15,23 @@ This project demonstrates a simple Retrieval-Augmented Generation (RAG) pipeline
     cd NLP_Project
     ```
 
-2.  Install the required dependencies:
+2.  Create and activate the fixed `env1` environment:
+    ```bash
+    conda env create -f environment.yml
+    conda activate env1
+    ```
+
+3.  Install or refresh the required Python dependencies inside `env1`:
     ```bash
     pip install -r requirements.txt
     ```
+
+    If you want the exact tested dependency set instead of the looser runtime spec:
+    ```bash
+    pip install -r requirements-lock.txt
+    ```
+
+See [ENVIRONMENT.md](/root/code/NLP_Project/ENVIRONMENT.md) for the complete run and test environment guide.
 
 ## Configuration
 
@@ -33,7 +46,19 @@ This project demonstrates a simple Retrieval-Augmented Generation (RAG) pipeline
             "model": "glm-4.6"
         },
         "RERANK_PROVIDER": "qwen3-rerank",
-        "SERPAPI_API_KEY": "YOUR_SERPAPI_API_KEY_HERE",
+        "brightDataSearch": {
+            "api_token": "YOUR_BRIGHTDATA_API_TOKEN_HERE",
+            "zone": "serp_api1",
+            "base_url": "https://api.brightdata.com/request"
+        },
+        "braveSearch": {
+            "primary_api_key": "YOUR_BRAVE_PRIMARY_API_KEY_HERE",
+            "secondary_api_key": "YOUR_BRAVE_SECONDARY_API_KEY_HERE",
+            "base_url": "https://api.search.brave.com/res/v1/web/search",
+            "rps": 1,
+            "monthly_limit": 2000,
+            "usage_log_path": "runtime/brave_search_usage.jsonl"
+        },
         "providers": {
             "openai": {
                 "api_key": "YOUR_OPENAI_API_KEY_HERE",
@@ -117,9 +142,19 @@ MiniMax M2 model supports a **thinking mode** that allows the model to show its 
 ### Required Configuration
 
 - `LLM_PROVIDER`: Choose your preferred LLM provider (`openai`, `anthropic`, `google`, `glm`, `hkgai`)
-- `SERPAPI_API_KEY`: Your API key for the SerpAPI service (required for search functionality)
+- `brightDataSearch.api_token` and `brightDataSearch.zone`: Bright Data SERP credentials for the Bright Data search provider
+- `braveSearch.primary_api_key`: Primary Brave Search key for default general web search
+- `braveSearch.secondary_api_key`: Optional fallback Brave Search key
+- `braveSearch.rps`: Request-per-second cap for Brave Search. This project expects `1`.
+- `braveSearch.usage_log_path`: Backend JSONL log used to track Brave quota consumption across restarts
 - Provider-specific API keys in the `providers` section
 - `RERANK_PROVIDER`: Optional reranking backend (`qwen3-rerank`). Provide the corresponding credentials under `rerank.providers`
+
+### Search Providers
+
+- **Brave Search**: Default first-choice provider for general web search. The backend records Brave requests to the configured JSONL log so monthly quota usage can be audited.
+- **Bright Data SERP**: Google-style fallback search provider implemented through Bright Data's request API.
+- **You.com / Google Custom Search**: Optional additional general web search providers that can be used when configured.
 
 ## Usage
 
@@ -214,3 +249,11 @@ Key flags:
 - `--pretty`: pretty-print the full JSON output per query (omit for concise answers)
 
 This is useful for quick regression checks before UI deployments or backend changes.
+
+## Testing
+
+Run the automated tests from the activated `env1` environment:
+
+```bash
+pytest -q
+```

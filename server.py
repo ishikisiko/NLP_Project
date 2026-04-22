@@ -177,15 +177,16 @@ def build_pipeline(
     # Build search sources metadata
     normalized_sources = _normalize_search_sources(search_sources)
     configured_sources: List[str] = []
-    if (config.get("SERPAPI_API_KEY") or "").strip():
-        configured_sources.append("serp")
+    brave_cfg = config.get("braveSearch") or {}
+    if (brave_cfg.get("primary_api_key") or "").strip():
+        configured_sources.append("brave")
+    bright_cfg = config.get("brightDataSearch") or {}
+    if (bright_cfg.get("api_token") or "").strip() and (bright_cfg.get("zone") or "").strip():
+        configured_sources.append("brightdata")
     you_cfg = config.get("youSearch") or {}
     you_key = (you_cfg.get("api_key") or config.get("YOU_API_KEY") or "").strip()
     if you_key:
         configured_sources.append("you")
-    mcp_cfg = (config.get("mcpServers") or {}).get("web-search-prime") or {}
-    if (mcp_cfg.get("url") or "").strip() and any((mcp_cfg.get("headers") or {}).get(token) for token in ("Authorization", "authorization")):
-        configured_sources.append("mcp")
     google_cfg = config.get("googleSearch") or {}
     google_key = (google_cfg.get("api_key") or config.get("GOOGLE_API_KEY") or "").strip()
     google_cx = (google_cfg.get("cx") or config.get("GOOGLE_CX") or "").strip()
@@ -362,7 +363,7 @@ def answer() -> Any:
         raw_sources = payload["search_sources"]
         if not isinstance(raw_sources, list):
             return jsonify({"error": "'search_sources' must be an array."}), 400
-        allowed_sources = {"serp", "you", "mcp", "google"}
+        allowed_sources = {"brave", "brightdata", "you", "google"}
         normalized_sources: List[str] = []
         seen = set()
         for item in raw_sources:

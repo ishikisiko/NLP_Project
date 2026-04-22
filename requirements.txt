@@ -14,7 +14,7 @@ langchain-community>=0.2.0
 langchain-openai>=0.1.0
 langchain-anthropic>=0.1.0
 langchain-google-genai>=1.0.0
-# langchain-huggingface>=0.0.1  # Optional: for local models
+langchain-huggingface>=1.0.0
 
 # Document Processing
 faiss-cpu>=1.7.4
@@ -24,3 +24,4 @@ pypdf>=4.0.0
 
 # Pydantic for data models
 pydantic>=2.0.0
+pytest>=8.0.0

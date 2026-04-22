@@ -1,24 +1,35 @@
 # Search modules
 from .search import (
+    BraveSearchClient,
+    BrightDataSERPClient,
     SearchClient,
     SearchHit,
-    SerpAPISearchClient,
     YouSearchClient,
     GoogleSearchClient,
-    MCPWebSearchClient,
     CombinedSearchClient,
+    PrioritySearchClient,
     FallbackSearchClient,
 )
 from .rerank import BaseReranker, Qwen3Reranker, RerankedHit
-from .source_selector import IntelligentSourceSelector
-from .sports_api import SportsAPI
+
+try:
+    from .source_selector import IntelligentSourceSelector
+except ImportError:  # pragma: no cover - optional runtime dependency path
+    IntelligentSourceSelector = None
+
+try:
+    from .sports_api import SportsAPI
+except ImportError:  # pragma: no cover - optional runtime dependency path
+    SportsAPI = None
 
 __all__ = [
     "SearchClient",
     "SearchHit",
-    "SerpAPISearchClient",
+    "BrightDataSERPClient",
+    "BraveSearchClient",
     "YouSearchClient",
     "GoogleSearchClient",
+    "PrioritySearchClient",
     "CombinedSearchClient",
     "FallbackSearchClient",
     "BaseReranker",

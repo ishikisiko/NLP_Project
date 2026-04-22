@@ -9,7 +9,7 @@ from typing import List, Optional, Dict, Any
 # Add parent directory to path for imports
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from core.main import build_search_client, build_reranker
+from main import build_search_client, build_reranker
 from langchain.langchain_llm import create_chat_model
 from langchain.langchain_orchestrator import create_langchain_orchestrator, LangChainOrchestrator
 from utils.time_parser import parse_time_constraint
@@ -216,16 +216,15 @@ def main() -> None:
     active_labels: List[str] = []
     missing_sources: List[str] = []
     configured_sources: List[str] = []
-    if (config.get("SERPAPI_API_KEY") or "").strip():
-        configured_sources.append("serp")
+    brave_cfg_batch = config.get("braveSearch") or {}
+    if (brave_cfg_batch.get("primary_api_key") or "").strip():
+        configured_sources.append("brave")
+    bright_cfg_batch = config.get("brightDataSearch") or {}
+    if (bright_cfg_batch.get("api_token") or "").strip() and (bright_cfg_batch.get("zone") or "").strip():
+        configured_sources.append("brightdata")
     you_cfg_batch = config.get("youSearch") or {}
     if (you_cfg_batch.get("api_key") or config.get("YOU_API_KEY") or "").strip():
         configured_sources.append("you")
-    mcp_cfg_batch = (config.get("mcpServers") or {}).get("web-search-prime") or {}
-    if (mcp_cfg_batch.get("url") or "").strip() and any(
-        (mcp_cfg_batch.get("headers") or {}).get(token) for token in ("Authorization", "authorization")
-    ):
-        configured_sources.append("mcp")
     google_cfg_batch = config.get("googleSearch") or {}
     google_key_batch = (google_cfg_batch.get("api_key") or config.get("GOOGLE_API_KEY") or "").strip()
     google_cx_batch = (google_cfg_batch.get("cx") or config.get("GOOGLE_CX") or "").strip()

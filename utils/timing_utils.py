@@ -111,6 +111,10 @@ class TimingRecorder:
             }
             if item.get("error"):
                 entry["error"] = item["error"]
+            for key, value in item.items():
+                if key in {"source", "label", "duration_ms", "error"}:
+                    continue
+                entry[key] = value
             self.search_sources.append(entry)
 
     def to_dict(self) -> Dict[str, Any]:
