@@ -22,10 +22,18 @@ class LocalRAG:
         llm_client: LLMClient,
         data_path: str,
         *,
-        embedding_model: str = "all-MiniLM-L6-v2",
+        config: Optional[Dict[str, object]] = None,
+        embedding_model: Optional[str] = None,
+        chunk_size: int = 1000,
+        chunk_overlap: int = 200,
     ) -> None:
         self.llm_client = llm_client
-        self.vector_store = LangChainVectorStore(model_name=embedding_model)
+        self.vector_store = LangChainVectorStore(
+            model_name=embedding_model,
+            chunk_size=chunk_size,
+            chunk_overlap=chunk_overlap,
+            config=config,
+        )
 
         print("Loading and indexing documents...")
         reader = FileReader(data_path)

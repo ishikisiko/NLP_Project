@@ -2,10 +2,42 @@
 
 This project demonstrates a simple Retrieval-Augmented Generation (RAG) pipeline.
 
+## Current Runtime Path
+
+- The default production path is `LangChainOrchestrator -> SearchRAGChain`.
+- The internal retrieval layer now uses a unified evidence model across `web`, `local`, and `domain` sources.
+- `search_hits` and `retrieved_docs` are still returned for compatibility, but they are now projected from the internal unified evidence set instead of being maintained as separate internal truth sources.
+- ReAct is still available, but the default product path uses it as a post-check fallback executor rather than as a parallel top-level runtime.
+
+## Unified Evidence Layer
+
+The default LangChain pipeline now normalizes first-class evidence into a shared model:
+
+- `EvidenceSource`: retrieval interface for `web`, `local`, and `domain`
+- `EvidenceItem`: normalized record containing content, reference, source identity, and metadata
+- Unified fusion: retrieval, normalization, deduplication, ranking, and answer-context construction happen before answer generation
+
+This affects both the default answer path and the ReAct fallback toolchain:
+
+- `local_docs` now reuses the unified local evidence source instead of calling legacy `LocalRAG` directly
+- `search_recovery` reuses the same fusion pipeline as the default path
+- domain evidence can remain direct-answer capable, but can also enter the unified fusion path when additional evidence is needed
+
+## Response Metadata
+
+In addition to legacy compatibility fields, default and fallback responses may now include:
+
+- `evidence_items`: normalized evidence records used internally by the pipeline
+- `evidence_summary`: short text summary of the fused evidence set
+- `evidence_sources_active`: first-class sources enabled for the run
+- `evidence_sources_used`: first-class sources that actually contributed evidence
+- `evidence_source_types_active` / `evidence_source_types_used`: source-type summaries for observability and fallback reuse
+
 ## LangChain integration
 
-- Local and hybrid RAG now run on LangChain primitives (FAISS + HuggingFace embeddings) for chunking and retrieval.
-- Install the refreshed dependencies (`langchain`, `langchain-community`, `faiss-cpu`, `langchain-huggingface`) via `pip install -r requirements.txt`.
+- Local and hybrid RAG now run on LangChain primitives (FAISS + configurable embeddings) for chunking and retrieval.
+- The default embedding configuration can point to an OpenAI-compatible API, while local HuggingFace embeddings remain available as a fallback option.
+- Install the refreshed dependencies (`langchain`, `langchain-community`, `faiss-cpu`, `langchain-huggingface`, `langchain-openai`) via `pip install -r requirements.txt`.
 
 ## Installation
 
@@ -36,6 +68,8 @@ See [ENVIRONMENT.md](/root/code/NLP_Project/ENVIRONMENT.md) for the complete run
 ## Configuration
 
 1.  Create a `config.json` file in the root of the project.
+
+    You can also keep the file elsewhere and point both CLI and server runs at it with `NLP_CONFIG_PATH=/full/path/config.json`.
 
 2.  Configure your preferred LLM provider and add your API keys:
     ```json
@@ -168,31 +202,32 @@ python server.py
 Then open your browser to `http://localhost:8000`.
 
 The web interface allows you to:
--   Switch between `search`, `local`, and `hybrid` RAG modes.
--   Upload local files for the `local` and `hybrid` modes.
+-   Toggle live search on or off.
+-   Pick active search providers and optionally force a search pass.
+-   Upload local files that can be used either with search disabled or alongside live search.
 -   Configure the LLM provider and other parameters.
 
 ### Command-Line Interface
 
-#### Search RAG
+#### Default Query Path
 
 Run the main script with your query (uses GLM by default):
 ```bash
 python main.py "your query here"
 ```
 
-#### Local RAG
+#### Local Documents Only
 
-Run the main script with your query and specify the path to your local files:
+Disable live search and point the pipeline at your local document directory:
 ```bash
-python main.py "your query here" --mode local --data-path ./data
+python main.py "your query here" --search off --data-path ./uploads
 ```
 
-#### Hybrid RAG
+#### Search + Local Documents
 
-Combine web search with your local documents:
+Keep search enabled and pass a local document directory so the pipeline can use both:
 ```bash
-python main.py "your query here" --mode hybrid --data-path ./data
+python main.py "your query here" --data-path ./uploads
 ```
 
 ### Override LLM Provider
@@ -231,6 +266,9 @@ python main.py "your query here" \
 - `--num-results`: Number of search results to include
 - `--pretty`: Pretty print the JSON response
 - `--disable-rerank`: Skip reranking even if configured
+- `--search off`: Disable live web/domain search and rely on local documents only
+
+Both `python main.py ...` and `python server.py` honor `NLP_CONFIG_PATH=/full/path/config.json` when you want to run against a non-default config file.
 
 ## Search Quality Evaluation
 

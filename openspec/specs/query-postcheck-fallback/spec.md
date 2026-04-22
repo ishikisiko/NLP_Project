@@ -1,18 +1,18 @@
 # query-postcheck-fallback Specification
 
 ## Purpose
-TBD - created by archiving change add-postcheck-react-fallback. Update Purpose after archive.
+Define the default pipeline post-check stage and the rules for escalating to ReAct fallback with compatible evidence context and fallback metadata.
 ## Requirements
 ### Requirement: Default pipeline SHALL run post-check before returning search answers
-系统 SHALL 在默认搜索 pipeline 生成首答后执行统一的 post-check 阶段，再决定是直接返回首答还是升级到补救路径。
+系统 SHALL 在统一默认搜索主链路生成首答后执行统一的 post-check 阶段，再决定是直接返回首答还是升级到补救路径。
 
-#### Scenario: Search answer passes post-check
-- **WHEN** 默认搜索 pipeline 生成首答且 post-check 判定该回答满足需求
+#### Scenario: Unified default pipeline search answer passes post-check
+- **WHEN** 统一默认搜索主链路生成首答且 post-check 判定该回答满足需求
 - **THEN** 系统 SHALL 直接返回首答
-- **AND** 返回结果 SHALL 记录 post-check verdict 和最终执行路径为默认 pipeline
+- **AND** 返回结果 SHALL 记录 post-check verdict 和最终执行路径为默认主链路
 
-#### Scenario: Search answer enters post-check only for eligible paths
-- **WHEN** 查询走 small talk、直接回答或纯领域 API 直出等非搜索补救路径
+#### Scenario: Non-search paths can skip post-check
+- **WHEN** 查询走 small talk、直接回答、纯领域 API 直出或其他未进入统一搜索主链路的路径
 - **THEN** 系统 SHALL 支持跳过或短路 post-check
 - **AND** 返回结果 SHALL 明确记录未执行完整 post-check 的原因
 
@@ -44,11 +44,11 @@ TBD - created by archiving change add-postcheck-react-fallback. Update Purpose a
 - **AND** judge 输出 SHALL 标明 failure types、缺失约束和简要原因
 
 ### Requirement: System SHALL trigger ReAct fallback only for recoverable failures
-系统 SHALL 仅在 post-check 失败且失败类型适合多步工具补救时触发 ReAct fallback。
+系统 SHALL 仅在统一默认搜索主链路的 post-check 失败且失败类型适合多步工具补救时触发 ReAct fallback。
 
-#### Scenario: Recoverable failure triggers ReAct
-- **WHEN** post-check 识别出约束覆盖缺失、需要补证据、需要多跳综合或其他可恢复失败
-- **THEN** 系统 SHALL 调用 ReAct fallback
+#### Scenario: Recoverable unified-pipeline failure triggers ReAct fallback
+- **WHEN** post-check 识别出统一默认搜索主链路的回答存在可恢复失败，如约束覆盖缺失、需要补证据或需要多跳综合
+- **THEN** 系统 SHALL 调用 `ReactAgentOrchestrator` 作为 fallback-only 执行器
 - **AND** 返回结果 SHALL 标记 fallback 已触发以及触发原因
 
 #### Scenario: Non-recoverable failure does not trigger ReAct
@@ -66,4 +66,3 @@ TBD - created by archiving change add-postcheck-react-fallback. Update Purpose a
 #### Scenario: Returned from ReAct fallback
 - **WHEN** 系统触发 ReAct fallback 并返回 fallback 结果
 - **THEN** `control` SHALL 包含 post-check verdict、fallback reason 和 `final_executor=react_fallback`
-

@@ -26,6 +26,16 @@
         "provider": "zai",
         "model": "glm-4.5-air"
     },
+    "embeddings": {
+        "provider": "openai_compatible",
+        "model": "doubao-embedding-vision",
+        "base_url": "https://ark.cn-beijing.volces.com/api/coding/v3",
+        "api_key": "YOUR_ARK_EMBEDDING_API_KEY_HERE"
+    },
+    "localRag": {
+        "chunk_size": 1000,
+        "chunk_overlap": 200
+    },
     "YOU_API_KEY": "YOUR_YOU_API_KEY_HERE",
     "GOOGLE_API_KEY": "YOUR_GOOGLE_API_KEY_HERE",
     "GOOGLE_CX": "YOUR_GOOGLE_CUSTOM_SEARCH_ENGINE_ID_HERE",

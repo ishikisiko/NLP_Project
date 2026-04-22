@@ -25,6 +25,7 @@ from pydantic import BaseModel, Field
 # Add parent directory to path for imports
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
+from evidence import DomainEvidenceSource, RetrievalOptions, build_evidence_summary, source_identity_label
 from langchain.langchain_rag import LocalRAGChain, NullSearchClient, SearchRAGChain
 from langchain.postcheck import PostcheckVerdict, merge_judge_verdict, screen_search_answer
 from langchain.langchain_support import Document, LangChainVectorStore
@@ -112,6 +113,8 @@ Always answer in the same language as the user's question."""
         reranker: Optional[Any] = None,
         min_rerank_score: float = 0.0,
         max_per_domain: int = 1,
+        chunk_size: int = 1000,
+        chunk_overlap: int = 200,
         source_selector: Optional[IntelligentSourceSelector] = None,
         show_timings: bool = False,
         google_api_key: Optional[str] = None,
@@ -135,6 +138,8 @@ Always answer in the same language as the user's question."""
         self.reranker = reranker
         self.min_rerank_score = min_rerank_score
         self.max_per_domain = max(1, max_per_domain)
+        self.chunk_size = chunk_size
+        self.chunk_overlap = chunk_overlap
         self.show_timings = show_timings
         self.google_api_key = google_api_key
         self.postcheck_llm = postcheck_llm or self.llm
@@ -315,6 +320,9 @@ Always answer in the same language as the user's question."""
                 self._local_rag = LocalRAGChain(
                     llm=self.llm,
                     data_path=self.data_path,
+                    config=self.config,
+                    chunk_size=self.chunk_size,
+                    chunk_overlap=self.chunk_overlap,
                 )
                 self._local_signature = snapshot
             except Exception as exc:
@@ -348,9 +356,13 @@ Always answer in the same language as the user's question."""
                 llm=self.llm,
                 search_client=search_client,
                 data_path=self.data_path,
+                config=self.config,
+                chunk_size=self.chunk_size,
+                chunk_overlap=self.chunk_overlap,
                 reranker=self.reranker,
                 min_rerank_score=self.min_rerank_score,
                 max_per_domain=self.max_per_domain,
+                source_selector=self.source_selector,
             )
             self._primary_signature = search_signature
 
@@ -436,6 +448,9 @@ Always answer in the same language as the user's question."""
         freshness: Optional[str] = None,
         date_restrict: Optional[str] = None,
         extra_context: Optional[str] = None,
+        domain: Optional[str] = None,
+        domain_result: Optional[Dict[str, Any]] = None,
+        enable_domain: bool = False,
     ) -> Optional[Dict[str, Any]]:
         pipeline = self._get_primary_rag(snapshot)
         if not pipeline:
@@ -456,6 +471,9 @@ Always answer in the same language as the user's question."""
             date_restrict=date_restrict,
             timing_recorder=timing_recorder,
             extra_context=extra_context,
+            domain=domain,
+            domain_result=domain_result,
+            enable_domain=enable_domain,
         )
 
     def answer(
@@ -604,6 +622,9 @@ Always answer in the same language as the user's question."""
             freshness=time_constraint.you_freshness if time_constraint.days else None,
             date_restrict=time_constraint.google_date_restrict if time_constraint.days else None,
             extra_context=domain_api_result.get("answer") if domain_api_result and should_continue else None,
+            domain=domain,
+            domain_result=domain_api_result,
+            enable_domain=bool(domain_api_result and should_continue),
         )
         if not result:
             response = self._handle_search_unavailable(
@@ -883,6 +904,16 @@ Always answer in the same language as the user's question."""
     ) -> Dict[str, Any]:
         """Handle domain-specific API responses."""
         answer = domain_api_result.get("answer", "")
+        domain_source = DomainEvidenceSource(self.source_selector)
+        domain_items = domain_source.retrieve(
+            query,
+            RetrievalOptions(
+                metadata={
+                    "domain": domain,
+                    "domain_result": domain_api_result,
+                }
+            ),
+        )
         
         # Enhance with LLM if data available
         domain_data = domain_api_result.get("data")
@@ -899,6 +930,18 @@ Always answer in the same language as the user's question."""
             "search_hits": [],
             "domain_data": domain_data,
             "llm_raw": None,
+            "evidence_items": [item.to_dict() for item in domain_items],
+            "evidence_summary": build_evidence_summary(domain_items),
+            "evidence_sources_active": [domain_source.describe_with_domain(domain)],
+            "evidence_sources_used": [
+                {
+                    "source_type": "domain",
+                    "source_id": f"domain:{domain}",
+                    "reference": domain_api_result.get("endpoint") or domain_api_result.get("provider") or f"domain:{domain}",
+                }
+            ] if domain_items else [],
+            "evidence_source_types_active": ["domain"],
+            "evidence_source_types_used": ["domain"] if domain_items else [],
             "control": {
                 "search_performed": False,
                 "decision": {"needs_search": False, "reason": f"domain_api_{domain}"},
@@ -1058,6 +1101,10 @@ Always answer in the same language as the user's question."""
         control.setdefault("search_sources_configured", self.configured_search_sources)
         if self.missing_search_sources:
             control.setdefault("search_sources_missing", self.missing_search_sources)
+        control.setdefault("evidence_sources_active", result.get("evidence_sources_active") or [])
+        control.setdefault("evidence_sources_used", result.get("evidence_sources_used") or [])
+        control.setdefault("evidence_source_types_active", result.get("evidence_source_types_active") or [])
+        control.setdefault("evidence_source_types_used", result.get("evidence_source_types_used") or [])
         
         result["control"] = control
         
@@ -1077,8 +1124,22 @@ Always answer in the same language as the user's question."""
         search_hits: List[Dict[str, Any]],
         retrieved_docs: List[Dict[str, Any]],
         domain_answer: Optional[str],
+        evidence_items: Optional[List[Dict[str, Any]]] = None,
     ) -> str:
         """Build a concise evidence summary for ReAct fallback input."""
+        if evidence_items:
+            lines: List[str] = []
+            for index, item in enumerate(evidence_items[:8], start=1):
+                lines.append(
+                    f"{index}. [{source_identity_label(item.get('source_type'), item.get('source_id'))}] "
+                    f"{item.get('title') or item.get('reference') or 'Evidence'} | "
+                    f"{item.get('reference') or 'N/A'} | "
+                    f"{item.get('snippet') or str(item.get('content') or '')[:180]}"
+                )
+            summary = "\n".join(lines).strip()
+            if summary:
+                return summary
+
         lines: List[str] = []
         if domain_answer:
             lines.append(f"Domain Context:\n{domain_answer}")
@@ -1297,6 +1358,7 @@ Always answer in the same language as the user's question."""
             result.get("search_hits") or [],
             result.get("retrieved_docs") or [],
             (domain_api_result or {}).get("answer"),
+            result.get("evidence_items") or [],
         )
         fallback_context = {
             "previous_answer": result.get("answer"),
@@ -1305,6 +1367,11 @@ Always answer in the same language as the user's question."""
             "evidence_summary": evidence_summary,
             "recovery_goal": self._build_recovery_goal(verdict),
             "search_hits": result.get("search_hits") or [],
+            "evidence_items": result.get("evidence_items") or [],
+            "evidence_sources_active": result.get("evidence_sources_active") or [],
+            "evidence_sources_used": result.get("evidence_sources_used") or [],
+            "evidence_source_types_active": result.get("evidence_source_types_active") or [],
+            "evidence_source_types_used": result.get("evidence_source_types_used") or [],
         }
         fallback_result = fallback_orchestrator.answer(
             query,

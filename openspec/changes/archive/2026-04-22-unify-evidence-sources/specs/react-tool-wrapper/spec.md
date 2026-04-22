@@ -1,33 +1,4 @@
-# react-tool-wrapper Specification
-
-## Purpose
-Define the LangChain ReAct tool wrappers used by the fallback executor, including web search, domain evidence access, local evidence access, and high-level search recovery built on the unified evidence layer.
-## Requirements
-### Requirement: WebSearchTool 封装
-系统 SHALL 将 `search_client.search()` 封装为 LangChain BaseTool，名为 `web_search`。
-
-#### Scenario: 执行网络搜索
-- **WHEN** Agent 调用 `web_search` 工具并传入查询字符串
-- **THEN** 工具 SHALL 调用 `search_client.search(query, num_results=5)`
-- **AND** 返回格式化后的搜索结果字符串
-
-#### Scenario: 搜索结果格式化
-- **WHEN** search 返回 SearchHit 列表
-- **THEN** 工具 SHALL 将结果格式化为可读字符串，每条结果包含序号、标题、URL、摘要
-- **AND** 如果无结果，返回 "未找到相关结果"
-
-### Requirement: DomainApiTool 封装
-系统 SHALL 将 `IntelligentSourceSelector` 封装为 LangChain BaseTool，名为 `domain_api`。
-
-#### Scenario: 获取领域专业数据
-- **WHEN** Agent 调用 `domain_api` 工具并传入领域查询
-- **THEN** 工具 SHALL 通过统一 `domain` EvidenceSource 获取领域证据
-- **AND** 如果领域可直接回答，工具 SHALL 返回自然语言回答
-- **AND** 返回内容 SHALL 保留来源标识或引用信息
-
-#### Scenario: 通用领域查询
-- **WHEN** Agent 调用 `domain_api` 但无匹配领域
-- **THEN** 工具 SHALL 返回空或提示"无相关领域数据"
+## MODIFIED Requirements
 
 ### Requirement: LocalDocTool 封装
 系统 SHALL 将本地知识库工具封装为 LangChain BaseTool，名为 `local_docs`，并通过统一 `EvidenceSource` / `EvidenceItem` 层复用默认主链路的本地证据检索能力，而不是直接依赖 legacy `LocalRAG`。
@@ -66,4 +37,3 @@ Define the LangChain ReAct tool wrappers used by the fallback executor, includin
 - **WHEN** 查询涉及已上传的本地文档且 post-check 判断证据不足
 - **THEN** Agent SHALL 仍可访问本地知识库工具
 - **AND** 工具输出 SHALL 保留文档来源信息以便最终回答引用
-

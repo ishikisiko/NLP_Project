@@ -55,6 +55,12 @@ Thumbs.db
 *.tmp
 *.temp
 
+# Test datasets and generated evaluation artifacts
+tests/long/
+tests/search_quality_external_*.csv
+tests/search_quality_external_*.json
+tests/search_quality_external_*.txt
+
 # PID files
 *.pid
 terminal-tool.json

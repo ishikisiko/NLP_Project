@@ -14,6 +14,7 @@ from werkzeug.utils import secure_filename
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from main import build_search_client, build_reranker
+from utils.chunking import resolve_chunk_settings
 from utils.temperature_config import get_temperature_for_task
 from langchain.langchain_llm import create_chat_model
 from langchain.langchain_orchestrator import create_langchain_orchestrator, LangChainOrchestrator
@@ -80,6 +81,8 @@ def build_pipeline(
     model_override: Optional[str] = None,
     *,
     search_sources: Optional[List[str]] = None,
+    chunk_size: Optional[int] = None,
+    chunk_overlap: Optional[int] = None,
 ) -> Any:
     """Create a LangChain pipeline configured for the current request."""
 
@@ -168,6 +171,15 @@ def build_pipeline(
                     # Model not found in any provider, raise an error instead of treating as provider
                     raise ConfigurationError(f"Model '{model_override}' not found in any provider configuration")
 
+    try:
+        resolved_chunk_size, resolved_chunk_overlap = resolve_chunk_settings(
+            config,
+            chunk_size=chunk_size,
+            chunk_overlap=chunk_overlap,
+        )
+    except ValueError as exc:
+        raise ConfigurationError(str(exc)) from exc
+
     # Build LangChain LLM
     try:
         llm = create_chat_model(config=config)
@@ -242,6 +254,8 @@ def build_pipeline(
         llm=llm,
         search_client=search_client,
         data_path=app.config['UPLOAD_FOLDER'],
+        chunk_size=resolved_chunk_size,
+        chunk_overlap=resolved_chunk_overlap,
         reranker=reranker,
         min_rerank_score=min_rerank_score,
         max_per_domain=max_per_domain,
@@ -409,6 +423,8 @@ def answer() -> Any:
         pipeline = build_pipeline(
             model_override=model,
             search_sources=search_sources if allow_search and search_sources else None,
+            chunk_size=payload.get("chunk_size"),
+            chunk_overlap=payload.get("chunk_overlap"),
         )
     except ConfigurationError as exc:
         return jsonify({"error": str(exc)}), 500

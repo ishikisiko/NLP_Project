@@ -63,6 +63,8 @@ class SmartSearchOrchestrator:
         reranker: Optional[BaseReranker] = None,
         min_rerank_score: float = 0.0,
         max_per_domain: int = 1,
+        chunk_size: int = 1000,
+        chunk_overlap: int = 200,
         requested_search_sources: Optional[List[str]] = None,
         active_search_sources: Optional[List[str]] = None,
         active_search_source_labels: Optional[List[str]] = None,
@@ -83,6 +85,8 @@ class SmartSearchOrchestrator:
         self.reranker = reranker
         self.min_rerank_score = min_rerank_score
         self.max_per_domain = max(1, max_per_domain)
+        self.chunk_size = chunk_size
+        self.chunk_overlap = chunk_overlap
         self._local_pipeline: Optional[LocalRAG] = None
         self._search_rag_pipeline: Optional[SearchRAG] = None
         self._local_signature: Optional[tuple] = None
@@ -907,6 +911,9 @@ class SmartSearchOrchestrator:
                 self._local_pipeline = LocalRAG(
                     llm_client=self.llm_client,
                     data_path=self.data_path,
+                    config=self.config,
+                    chunk_size=self.chunk_size,
+                    chunk_overlap=self.chunk_overlap,
                 )
                 self._local_signature = snapshot
             except ValueError:
@@ -926,6 +933,9 @@ class SmartSearchOrchestrator:
                 llm_client=self.llm_client,
                 search_client=self.search_client,
                 data_path=self.data_path,  # Can be None for search-only mode
+                config=self.config,
+                chunk_size=self.chunk_size,
+                chunk_overlap=self.chunk_overlap,
                 reranker=self.reranker,
                 min_rerank_score=self.min_rerank_score,
                 max_per_domain=self.max_per_domain,

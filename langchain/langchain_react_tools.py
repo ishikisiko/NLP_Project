@@ -20,10 +20,16 @@ from pydantic import BaseModel, Field
 # Add parent directory to path for imports
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
+from evidence import (
+    DomainEvidenceSource,
+    LocalEvidenceSource,
+    RetrievalOptions,
+    build_evidence_summary,
+    source_identity_label,
+)
 from langchain.langchain_rag import SearchRAGChain
 from search.search import SearchClient, SearchHit
 from search.source_selector import IntelligentSourceSelector
-from rag.local_rag import LocalRAG
 from utils.timing_utils import TimingRecorder
 
 
@@ -112,6 +118,7 @@ class ReActSearchRecoveryTool(BaseTool):
     reranker: Optional[Any] = Field(default=None, exclude=True)
     min_rerank_score: float = Field(default=0.0, exclude=True)
     max_per_domain: int = Field(default=1, exclude=True)
+    source_selector: Optional[Any] = Field(default=None, exclude=True)
 
     class Config:
         arbitrary_types_allowed = True
@@ -125,6 +132,7 @@ class ReActSearchRecoveryTool(BaseTool):
         reranker: Optional[Any] = None,
         min_rerank_score: float = 0.0,
         max_per_domain: int = 1,
+        source_selector: Optional[IntelligentSourceSelector] = None,
         **kwargs: Any,
     ) -> None:
         super().__init__(
@@ -134,6 +142,7 @@ class ReActSearchRecoveryTool(BaseTool):
             reranker=reranker,
             min_rerank_score=min_rerank_score,
             max_per_domain=max_per_domain,
+            source_selector=source_selector,
             **kwargs,
         )
         self._rag_chain: Optional[SearchRAGChain] = None
@@ -148,6 +157,7 @@ class ReActSearchRecoveryTool(BaseTool):
                 reranker=self.reranker,
                 min_rerank_score=self.min_rerank_score,
                 max_per_domain=self.max_per_domain,
+                source_selector=self.source_selector,
             )
         return self._rag_chain
 
@@ -167,6 +177,7 @@ class ReActSearchRecoveryTool(BaseTool):
                 temperature=0.2,
                 enable_search=True,
                 enable_local_docs=True,
+                enable_domain=True,
             )
             self._last_payload = result
             return self._format_payload(result)
@@ -182,6 +193,14 @@ class ReActSearchRecoveryTool(BaseTool):
         if answer:
             parts.append(f"Recovered Answer:\n{answer}")
 
+        used_sources = payload.get("evidence_sources_used") or []
+        if used_sources:
+            labels = [
+                source_identity_label(item.get("source_type"), item.get("source_id"))
+                for item in used_sources
+            ]
+            parts.append(f"Evidence Sources Used:\n{', '.join(labels)}")
+
         if search_hits:
             parts.append("Evidence Summary:")
             for index, hit in enumerate(search_hits[:5], start=1):
@@ -195,6 +214,10 @@ class ReActSearchRecoveryTool(BaseTool):
             for index, doc in enumerate(retrieved_docs[:3], start=1):
                 source = doc.get("source") or f"Document {index}"
                 parts.append(f"{index}. {source}")
+
+        evidence_summary = str(payload.get("evidence_summary") or "").strip()
+        if evidence_summary:
+            parts.append(f"Unified Evidence:\n{evidence_summary}")
 
         return "\n\n".join(parts) if parts else "Search recovery completed but returned no evidence."
 
@@ -233,35 +256,27 @@ class ReActDomainTool(BaseTool):
     ) -> str:
         """Execute domain API query and return formatted results."""
         try:
-            timing_recorder = TimingRecorder(enabled=False)
-
-            # Select domain
-            domain, sources = self.source_selector.select_sources(
-                query, timing_recorder=timing_recorder
+            evidence_source = DomainEvidenceSource(self.source_selector)
+            evidence_items = evidence_source.retrieve(
+                query,
+                RetrievalOptions(timing_recorder=TimingRecorder(enabled=False)),
             )
-
-            # Fetch domain data
-            domain_api_result = self.source_selector.fetch_domain_data(
-                query, domain, timing_recorder=timing_recorder
-            )
-
-            if not domain_api_result:
+            if not evidence_items:
                 return "No domain-specific data found for this query."
 
-            # Check if handled
-            if domain_api_result.get("handled") and domain_api_result.get("answer"):
-                answer = domain_api_result.get("answer", "")
-                data = domain_api_result.get("data")
+            item = evidence_items[0]
+            domain = item.metadata.get("domain") or "domain"
+            answer = item.content
+            data = item.metadata.get("data")
+            if data and self.llm and not item.metadata.get("continue_search"):
+                enhanced = self._enhance_answer(query, domain, data)
+                if enhanced:
+                    answer = enhanced
 
-                # Enhance with LLM if data available and we have an LLM
-                if data and self.llm and not domain_api_result.get("continue_search"):
-                    enhanced = self._enhance_answer(query, domain, data)
-                    if enhanced:
-                        return enhanced
-
-                return answer
-
-            return "No domain-specific data found for this query."
+            lines = [answer]
+            lines.append(f"Evidence Source: {source_identity_label(item.source_type, item.source_id)}")
+            lines.append(f"Reference: {item.reference}")
+            return "\n\n".join(line for line in lines if line)
 
         except Exception as exc:
             return f"Domain API error: {exc}"
@@ -315,7 +330,7 @@ class ReActDomainTool(BaseTool):
 
 
 class ReActLocalDocTool(BaseTool):
-    """LangChain Tool wrapping LocalRAG for ReAct agents."""
+    """LangChain tool that reuses the unified local evidence source."""
 
     name: str = "local_docs"
     description: str = (
@@ -340,26 +355,13 @@ class ReActLocalDocTool(BaseTool):
     ) -> None:
         super().__init__(data_path=data_path, **kwargs)
         self.llm = llm
-        self._rag: Optional[LocalRAG] = None
+        self._source = LocalEvidenceSource(data_path=data_path)
 
-    def _get_rag(self) -> Optional[LocalRAG]:
-        """Get or create LocalRAG instance."""
+    def _get_source(self) -> Optional[LocalEvidenceSource]:
+        """Return the configured local evidence source when documents exist."""
         if not self.data_path or not os.path.isdir(self.data_path):
             return None
-
-        if self._rag is None:
-            if self.llm:
-                try:
-                    # Use LangChainLLMWrapper to wrap the LangChain model
-                    from langchain.langchain_llm import LangChainLLMWrapper
-                    llm_client = LangChainLLMWrapper(self.llm)
-                    self._rag = LocalRAG(
-                        llm_client=llm_client,
-                        data_path=self.data_path,
-                    )
-                except Exception:
-                    return None
-        return self._rag
+        return self._source
 
     def _run(
         self,
@@ -370,26 +372,22 @@ class ReActLocalDocTool(BaseTool):
         if not self.data_path:
             return "Local knowledge base is not available (no data path configured)."
 
-        rag = self._get_rag()
-        if not rag:
+        source = self._get_source()
+        if not source:
             return "Local knowledge base is not available (no data path configured)."
 
         try:
-            result = rag.answer(query, num_retrieved_docs=3)
-            if not result or not result.get("answer"):
+            evidence_items = source.retrieve(query, RetrievalOptions(num_results=3))
+            if not evidence_items:
                 return "No relevant documents found."
 
-            answer = result.get("answer", "")
-
-            # Add source references if available
-            retrieved_docs = result.get("retrieved_docs", [])
-            if retrieved_docs:
-                answer += "\n\n**本地文档来源：**\n"
-                for idx, doc in enumerate(retrieved_docs, 1):
-                    source = doc.get("source", f"文档 {idx}")
-                    answer += f"{idx}. {source}\n"
-
-            return answer
+            lines = ["Relevant Local Evidence:"]
+            for idx, item in enumerate(evidence_items, 1):
+                lines.append(f"{idx}. {item.title}\n   {item.snippet}")
+            lines.append("")
+            lines.append("Unified Evidence:")
+            lines.append(build_evidence_summary(evidence_items))
+            return "\n".join(lines)
 
         except Exception as exc:
             return f"Local documents query failed: {exc}"
@@ -427,6 +425,20 @@ def create_react_tools_from_config(
         except Exception:
             reranker = None
 
+    source_selector = None
+    try:
+        source_selector = IntelligentSourceSelector(
+            llm_client=None,  # We'll use the provided llm for enhancement
+            use_llm=False,
+            google_api_key=config.get("googleSearch", {}).get("api_key") or config.get("GOOGLE_API_KEY"),
+            finnhub_api_key=config.get("FINNHUB_API_KEY"),
+            sportsdb_api_key=config.get("SPORTSDB_API_KEY"),
+            apisports_api_key=config.get("APISPORTS_KEY"),
+            config=config,
+        )
+    except Exception:
+        source_selector = None
+
     # Create search tools if search client is available
     if search_client:
         tools.append(ReActSearchTool(search_client=search_client))
@@ -439,20 +451,14 @@ def create_react_tools_from_config(
                     reranker=reranker,
                     min_rerank_score=min_rerank_score,
                     max_per_domain=max_per_domain,
+                    source_selector=source_selector,
                 )
             )
 
     # Create domain API tool
     try:
-        source_selector = IntelligentSourceSelector(
-            llm_client=None,  # We'll use the provided llm for enhancement
-            use_llm=False,
-            google_api_key=config.get("googleSearch", {}).get("api_key") or config.get("GOOGLE_API_KEY"),
-            finnhub_api_key=config.get("FINNHUB_API_KEY"),
-            sportsdb_api_key=config.get("SPORTSDB_API_KEY"),
-            apisports_api_key=config.get("APISPORTS_KEY"),
-            config=config,
-        )
+        if source_selector is None:
+            raise ValueError("source selector unavailable")
         tools.append(ReActDomainTool(
             source_selector=source_selector,
             llm=llm,

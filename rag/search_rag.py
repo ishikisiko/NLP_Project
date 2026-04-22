@@ -47,14 +47,18 @@ class SearchRAG:
         data_path: Optional[str] = None,
         system_prompt: str = DEFAULT_SYSTEM_PROMPT,
         *,
+        config: Optional[Dict[str, object]] = None,
         reranker: Optional[BaseReranker] = None,
         min_rerank_score: float = 0.0,
         max_per_domain: int = 1,
-        embedding_model: str = "all-MiniLM-L6-v2",
+        embedding_model: Optional[str] = None,
+        chunk_size: int = 1000,
+        chunk_overlap: int = 200,
     ) -> None:
         self.llm_client = llm_client
         self.search_client = search_client
         self.system_prompt = system_prompt
+        self.config = config or {}
         self.reranker = reranker
         self.min_rerank_score = min_rerank_score
         self.max_per_domain = max(1, max_per_domain)
@@ -66,7 +70,12 @@ class SearchRAG:
             try:
                 reader = FileReader(data_path)
                 documents = reader.load()
-                self.vector_store = LangChainVectorStore(model_name=embedding_model)
+                self.vector_store = LangChainVectorStore(
+                    model_name=embedding_model,
+                    chunk_size=chunk_size,
+                    chunk_overlap=chunk_overlap,
+                    config=self.config,
+                )
                 chunk_count = self.vector_store.index(documents)
                 print(f"Indexed {chunk_count} chunks from local documents.")
             except Exception as e:

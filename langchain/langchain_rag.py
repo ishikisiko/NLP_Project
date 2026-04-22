@@ -12,7 +12,7 @@ import time
 import logging
 import re
 from dataclasses import asdict
-from typing import Any, Dict, Iterator, List, Optional, Set, Union
+from typing import Any, Dict, Iterator, List, Optional, Set, Tuple, Union
 
 from langchain_core.documents import Document as LCDocument
 from langchain_core.language_models.chat_models import BaseChatModel
@@ -29,6 +29,18 @@ from langchain_core.runnables import (
 # Add parent directory to path for imports
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
+from evidence import (
+    DomainEvidenceSource,
+    EvidenceItem,
+    LocalEvidenceSource,
+    RetrievalOptions,
+    WebEvidenceSource,
+    build_evidence_summary,
+    describe_used_sources,
+    evidence_items_to_documents,
+    evidence_items_to_search_hits,
+    normalize_reference_label,
+)
 from langchain.langchain_support import Document, FileReader, LangChainVectorStore
 from langchain.langchain_tools import SearchRetriever, WebSearchTool
 from search.search import SearchClient, SearchHit, GoogleSearchClient
@@ -93,12 +105,14 @@ class LocalRAGChain:
         llm: BaseChatModel,
         data_path: str,
         *,
-        embedding_model: str = "all-MiniLM-L6-v2",
+        config: Optional[Dict[str, Any]] = None,
+        embedding_model: Optional[str] = None,
         system_prompt: str = DEFAULT_LOCAL_RAG_SYSTEM_PROMPT,
         chunk_size: int = 1000,
         chunk_overlap: int = 200,
     ) -> None:
         self.llm = llm
+        self.config = config or {}
         self.system_prompt = system_prompt
         
         # Initialize vector store
@@ -106,6 +120,7 @@ class LocalRAGChain:
             model_name=embedding_model,
             chunk_size=chunk_size,
             chunk_overlap=chunk_overlap,
+            config=self.config,
         )
         
         # Load and index documents
@@ -230,29 +245,273 @@ class SearchRAGChain:
         *,
         data_path: Optional[str] = None,
         system_prompt: str = DEFAULT_SEARCH_RAG_SYSTEM_PROMPT,
-        embedding_model: str = "all-MiniLM-L6-v2",
+        config: Optional[Dict[str, Any]] = None,
+        embedding_model: Optional[str] = None,
+        chunk_size: int = 1000,
+        chunk_overlap: int = 200,
         reranker: Optional[Any] = None,
         min_rerank_score: float = 0.0,
         max_per_domain: int = 1,
+        source_selector: Optional[Any] = None,
     ) -> None:
         self.llm = llm
         self.search_client = search_client
+        self.config = config or {}
         self.system_prompt = system_prompt
         self.reranker = reranker
         self.min_rerank_score = min_rerank_score
         self.max_per_domain = max(1, max_per_domain)
+        self.source_selector = source_selector
         
         # Initialize local vector store if data_path provided
         self.vector_store: Optional[LangChainVectorStore] = None
         if data_path:
             print("Loading and indexing local documents...")
             try:
-                self.vector_store = LangChainVectorStore(model_name=embedding_model)
+                self.vector_store = LangChainVectorStore(
+                    model_name=embedding_model,
+                    chunk_size=chunk_size,
+                    chunk_overlap=chunk_overlap,
+                    config=self.config,
+                )
                 chunk_count = self.vector_store.index_from_directory(data_path)
                 print(f"Indexed {chunk_count} chunks from local documents.")
             except Exception as e:
                 print(f"Failed to load local documents: {e}")
                 self.vector_store = None
+
+        self.web_source = WebEvidenceSource(search_client)
+        self.local_source = LocalEvidenceSource(
+            vector_store=self.vector_store,
+            data_path=data_path,
+            embedding_model=embedding_model,
+            chunk_size=chunk_size,
+            chunk_overlap=chunk_overlap,
+            config=self.config,
+        )
+        self.domain_source = DomainEvidenceSource(source_selector)
+
+    def _format_evidence_context(self, items: List[EvidenceItem]) -> Dict[str, str]:
+        """Format evidence items into grouped prompt context blocks."""
+        grouped: Dict[str, List[str]] = {
+            "domain": [],
+            "web": [],
+            "local": [],
+        }
+
+        for index, item in enumerate(items, start=1):
+            label = normalize_reference_label(item)
+            content = item.snippet or item.content
+            if item.source_type == "web":
+                grouped["web"].append(
+                    f"{index}. {item.title or f'Result {index}'}\n"
+                    f"   URL: {label or 'N/A'}\n"
+                    f"   {content or 'No snippet available.'}"
+                )
+            elif item.source_type == "local":
+                preview = content[:500]
+                if len(content) > 500:
+                    preview += "..."
+                grouped["local"].append(f"{index}. {label}\n   {preview}")
+            elif item.source_type == "domain":
+                grouped["domain"].append(
+                    f"{index}. {item.title or 'Domain Evidence'}\n"
+                    f"   Source: {label}\n"
+                    f"   {content}"
+                )
+
+        return {
+            "domain": "\n".join(grouped["domain"]),
+            "web": "\n".join(grouped["web"]),
+            "local": "\n".join(grouped["local"]),
+        }
+
+    def _dedupe_and_rank_evidence(
+        self,
+        items: List[EvidenceItem],
+    ) -> Tuple[List[EvidenceItem], List[Dict[str, Any]]]:
+        """Apply unified evidence deduplication and assign final ranks."""
+        deduped: List[EvidenceItem] = []
+        metadata: List[Dict[str, Any]] = []
+        seen: set[tuple[str, str, str]] = set()
+
+        for item in items:
+            key = (
+                item.source_type,
+                str(item.reference or item.title).strip().lower(),
+                " ".join(str(item.content or item.snippet or "").split())[:180].lower(),
+            )
+            if key in seen:
+                metadata.append(
+                    {
+                        "source_type": item.source_type,
+                        "source_id": item.source_id,
+                        "reference": normalize_reference_label(item),
+                        "dropped": "duplicate_evidence",
+                    }
+                )
+                continue
+            seen.add(key)
+            deduped.append(item)
+
+        for rank, item in enumerate(deduped, start=1):
+            item.rank = rank
+
+        return deduped, metadata
+
+    def _collect_domain_evidence(
+        self,
+        query: str,
+        *,
+        domain: Optional[str],
+        domain_result: Optional[Dict[str, Any]],
+        extra_context: Optional[str],
+        enable_domain: bool,
+        timing_recorder: Optional[TimingRecorder],
+    ) -> Tuple[List[EvidenceItem], Optional[Dict[str, Any]]]:
+        """Normalize domain API evidence into unified evidence items."""
+        if not (domain_result or extra_context or (enable_domain and self.source_selector)):
+            return [], domain_result
+
+        options = RetrievalOptions(
+            num_results=1,
+            timing_recorder=timing_recorder,
+            metadata={
+                "domain": domain,
+                "domain_result": domain_result,
+                "extra_context": extra_context,
+            },
+        )
+        items = self.domain_source.retrieve(query, options)
+
+        if domain_result is None and items:
+            domain_result = {
+                "answer": items[0].content,
+                "handled": True,
+                "continue_search": True,
+            }
+            domain_meta = items[0].metadata or {}
+            if domain_meta.get("data") is not None:
+                domain_result["data"] = domain_meta.get("data")
+
+        return items, domain_result
+
+    def _retrieve_evidence(
+        self,
+        query: str,
+        *,
+        search_query: Optional[str],
+        num_search_results: int,
+        per_source_limit: Optional[int],
+        num_retrieved_docs: int,
+        enable_search: bool,
+        enable_local_docs: bool,
+        freshness: Optional[str],
+        date_restrict: Optional[str],
+        timing_recorder: Optional[TimingRecorder],
+        domain: Optional[str] = None,
+        domain_result: Optional[Dict[str, Any]] = None,
+        extra_context: Optional[str] = None,
+        enable_domain: bool = False,
+    ) -> Dict[str, Any]:
+        """Retrieve and normalize evidence from enabled first-class sources."""
+        effective_query = search_query.strip() if search_query else query
+        active_sources: List[Dict[str, Any]] = []
+        evidence_items: List[EvidenceItem] = []
+        rerank_meta: List[Dict[str, Any]] = []
+        fusion_meta: List[Dict[str, Any]] = []
+        search_error: Optional[str] = None
+        search_warnings: List[str] = []
+
+        domain_items, domain_result = self._collect_domain_evidence(
+            query,
+            domain=domain,
+            domain_result=domain_result,
+            extra_context=extra_context,
+            enable_domain=enable_domain,
+            timing_recorder=timing_recorder,
+        )
+        if domain_items:
+            active_sources.append(self.domain_source.describe_with_domain(domain or domain_items[0].metadata.get("domain")))
+            evidence_items.extend(domain_items)
+
+        if enable_search:
+            active_sources.append(self.web_source.describe())
+            try:
+                per_source_cap = per_source_limit or num_search_results
+                fetch_limit = num_search_results
+                if self.reranker and hasattr(self.search_client, "clients"):
+                    fetch_limit = per_source_cap * len(self.search_client.clients)
+
+                search_items = self.web_source.retrieve(
+                    effective_query,
+                    RetrievalOptions(
+                        num_results=fetch_limit,
+                        per_source_limit=per_source_cap,
+                        freshness=freshness,
+                        date_restrict=date_restrict,
+                    ),
+                )
+                hits = evidence_items_to_search_hits(search_items)
+
+                if self._is_temporal_change_query(query):
+                    missing_years = self._detect_missing_years(query, hits)
+                    if missing_years:
+                        logger.info(
+                            "Insufficient historical data found (missing: %s), performing granular search fallback.",
+                            missing_years,
+                        )
+                        granular_hits = self._perform_granular_search_fallback(
+                            query,
+                            effective_query,
+                            num_search_results,
+                            per_source_cap,
+                            freshness,
+                            date_restrict,
+                            timing_recorder,
+                            missing_years=missing_years,
+                        )
+                        hits.extend(granular_hits)
+
+                hits, rerank_meta = self._apply_rerank(query, hits, limit=num_search_results)
+                evidence_items.extend(self.web_source.hits_to_items(hits))
+            except Exception as exc:
+                search_error = str(exc)
+            finally:
+                if timing_recorder:
+                    timings_getter = getattr(self.search_client, "get_last_timings", None)
+                    if callable(timings_getter):
+                        timing_recorder.extend_search_timings(timings_getter())
+
+            get_last_errors = getattr(self.search_client, "get_last_errors", None)
+            if callable(get_last_errors):
+                errors = get_last_errors() or []
+                for item in errors:
+                    source = str(item.get("source") or "搜索服务")
+                    detail = str(item.get("error") or "未知错误")
+                    search_warnings.append(f"{source} 出现异常：{detail}")
+
+        if enable_local_docs and self.local_source.is_available():
+            active_sources.append(self.local_source.describe())
+            evidence_items.extend(
+                self.local_source.retrieve(
+                    query,
+                    RetrievalOptions(num_results=num_retrieved_docs),
+                )
+            )
+
+        evidence_items, fusion_meta = self._dedupe_and_rank_evidence(evidence_items)
+        return {
+            "effective_query": effective_query,
+            "evidence_items": evidence_items,
+            "active_sources": active_sources,
+            "used_sources": describe_used_sources(evidence_items),
+            "search_error": search_error,
+            "search_warnings": search_warnings,
+            "rerank_meta": rerank_meta,
+            "fusion_meta": fusion_meta,
+            "domain_result": domain_result,
+        }
     
     def _format_search_hits(self, hits: List[SearchHit]) -> str:
         """Format search hits for prompt context."""
@@ -590,81 +849,42 @@ class SearchRAGChain:
         timing_recorder: Optional[TimingRecorder] = None,
         images: Optional[List[Dict[str, str]]] = None,
         extra_context: Optional[str] = None,
+        domain: Optional[str] = None,
+        domain_result: Optional[Dict[str, Any]] = None,
+        enable_domain: bool = False,
     ) -> Dict[str, Any]:
         """Answer a query using search + local docs RAG pipeline."""
-        
-        effective_query = search_query.strip() if search_query else query
-        hits: List[SearchHit] = []
-        search_error: Optional[str] = None
-        search_warnings: List[str] = []
-        
-        # Execute search
-        if enable_search:
-            try:
-                per_source_cap = per_source_limit or num_search_results
-                fetch_limit = num_search_results
-                if self.reranker and hasattr(self.search_client, "clients"):
-                    fetch_limit = per_source_cap * len(self.search_client.clients)
-                
-                hits = self.search_client.search(
-                    effective_query,
-                    num_results=fetch_limit,
-                    per_source_limit=per_source_cap,
-                    freshness=freshness,
-                    date_restrict=date_restrict,
-                )
-                
-                # Check for granular search fallback
-                if self._is_temporal_change_query(query):
-                    missing_years = self._detect_missing_years(query, hits)
-                    if missing_years:
-                        logger.info(f"Insufficient historical data found (missing: {missing_years}), performing granular search fallback.")
-                        granular_hits = self._perform_granular_search_fallback(
-                            query, effective_query, num_search_results, per_source_cap,
-                            freshness, date_restrict, timing_recorder, missing_years=missing_years
-                        )
-                        # Merge hits
-                        hits.extend(granular_hits)
-            except Exception as exc:
-                hits = []
-                search_error = str(exc)
-            finally:
-                if timing_recorder:
-                    timings_getter = getattr(self.search_client, "get_last_timings", None)
-                    if callable(timings_getter):
-                        timing_recorder.extend_search_timings(timings_getter())
-            
-            # Collect errors from combined client
-            get_last_errors = getattr(self.search_client, "get_last_errors", None)
-            if callable(get_last_errors):
-                errors = get_last_errors() or []
-                for item in errors:
-                    source = str(item.get("source") or "搜索服务")
-                    detail = str(item.get("error") or "未知错误")
-                    search_warnings.append(f"{source} 出现异常：{detail}")
-        
-        # Apply reranking
-        hits, rerank_meta = self._apply_rerank(query, hits, limit=num_search_results)
-        
-        # Retrieve local documents
-        retrieved_docs: List[Document] = []
-        if enable_local_docs and self.vector_store:
-            retrieved_docs = self.vector_store.search(query, k=num_retrieved_docs)
+        retrieval = self._retrieve_evidence(
+            query,
+            search_query=search_query,
+            num_search_results=num_search_results,
+            per_source_limit=per_source_limit,
+            num_retrieved_docs=num_retrieved_docs,
+            enable_search=enable_search,
+            enable_local_docs=enable_local_docs,
+            freshness=freshness,
+            date_restrict=date_restrict,
+            timing_recorder=timing_recorder,
+            domain=domain,
+            domain_result=domain_result,
+            extra_context=extra_context,
+            enable_domain=enable_domain,
+        )
+        evidence_items: List[EvidenceItem] = retrieval["evidence_items"]
+        search_hits = evidence_items_to_search_hits(evidence_items)
+        retrieved_docs = evidence_items_to_documents(evidence_items)
+        domain_items = [item for item in evidence_items if item.source_type == "domain"]
 
-        has_retrieval_context = bool(hits or retrieved_docs or extra_context)
+        has_retrieval_context = bool(evidence_items)
         if has_retrieval_context:
-            search_context = self._format_search_hits(hits)
-            local_context = self._format_local_docs(retrieved_docs)
-
+            formatted_context = self._format_evidence_context(evidence_items)
             prompt_parts = [f"Question: {query}\n\n"]
-            if search_context:
-                prompt_parts.append(f"Web Search Results:\n{search_context}\n\n")
-            if local_context:
-                prompt_parts.append(f"Local Documents:\n{local_context}\n\n")
-
-            if extra_context:
-                prompt_parts.append(f"Additional Context (Domain Data):\n{extra_context}\n\n")
-
+            if formatted_context["domain"]:
+                prompt_parts.append(f"Domain Evidence:\n{formatted_context['domain']}\n\n")
+            if formatted_context["web"]:
+                prompt_parts.append(f"Web Search Results:\n{formatted_context['web']}\n\n")
+            if formatted_context["local"]:
+                prompt_parts.append(f"Local Documents:\n{formatted_context['local']}\n\n")
             prompt_parts.append(
                 "Based on the above information, please answer the question. "
                 "If information is insufficient, acknowledge it."
@@ -727,7 +947,7 @@ class SearchRAGChain:
         
         # Build answer with references
         answer = content
-        reference_hits = hits if reference_limit is None else hits[:reference_limit]
+        reference_hits = search_hits if reference_limit is None else search_hits[:reference_limit]
         
         if answer:
             if reference_hits:
@@ -743,21 +963,33 @@ class SearchRAGChain:
                 for idx, doc in enumerate(retrieved_docs, 1):
                     source = doc.source or f"文档 {idx}"
                     answer += f"{idx}. {source}\n"
+
+            if domain_items:
+                answer += "\n\n**领域来源：**\n"
+                for idx, item in enumerate(domain_items, 1):
+                    answer += f"{idx}. {item.title or 'Domain Evidence'} | {normalize_reference_label(item)}\n"
         
         # Build response
         payload: Dict[str, Any] = {
             "query": query,
             "answer": answer,
-            "search_hits": [asdict(hit) for hit in hits],
+            "search_hits": [asdict(hit) for hit in search_hits],
             "retrieved_docs": [asdict(doc) for doc in retrieved_docs],
             "llm_raw": response.response_metadata if hasattr(response, "response_metadata") else None,
-            "rerank": rerank_meta or None,
+            "rerank": retrieval["rerank_meta"] or None,
+            "fusion": retrieval["fusion_meta"] or None,
+            "evidence_items": [item.to_dict() for item in evidence_items],
+            "evidence_summary": build_evidence_summary(evidence_items),
+            "evidence_sources_active": retrieval["active_sources"],
+            "evidence_sources_used": retrieval["used_sources"],
+            "evidence_source_types_active": sorted({item["source_type"] for item in retrieval["active_sources"]}),
+            "evidence_source_types_used": sorted({item["source_type"] for item in retrieval["used_sources"]}),
         }
         
-        if search_error:
-            payload["search_error"] = search_error
-        if search_warnings:
-            payload["search_warnings"] = search_warnings
+        if retrieval["search_error"]:
+            payload["search_error"] = retrieval["search_error"]
+        if retrieval["search_warnings"]:
+            payload["search_warnings"] = retrieval["search_warnings"]
         
         return payload
     
@@ -777,57 +1009,54 @@ class SearchRAGChain:
         freshness: Optional[str] = None,
         date_restrict: Optional[str] = None,
         timing_recorder: Optional[TimingRecorder] = None,
+        domain: Optional[str] = None,
+        domain_result: Optional[Dict[str, Any]] = None,
+        enable_domain: bool = False,
     ) -> Iterator[str]:
         """Stream answer using search + local docs RAG pipeline."""
         import json
-        
-        effective_query = search_query.strip() if search_query else query
-        hits: List[SearchHit] = []
-        search_warnings: List[str] = []
-        
-        # Execute search
-        if enable_search:
-            per_source_cap = per_source_limit or num_search_results
-            hits = self.search_client.search(
-                effective_query,
-                num_results=num_search_results,
-                per_source_limit=per_source_cap,
-                freshness=freshness,
-                date_restrict=date_restrict,
-            )
-            
-            if timing_recorder:
-                timings_getter = getattr(self.search_client, "get_last_timings", None)
-                if callable(timings_getter):
-                    timing_recorder.extend_search_timings(timings_getter())
-        
-        # Apply reranking
-        hits, rerank_meta = self._apply_rerank(query, hits, limit=num_search_results)
-        
-        # Retrieve local documents
-        retrieved_docs: List[Document] = []
-        if enable_local_docs and self.vector_store:
-            retrieved_docs = self.vector_store.search(query, k=num_retrieved_docs)
-        
-        # Yield preliminary data
+
+        retrieval = self._retrieve_evidence(
+            query,
+            search_query=search_query,
+            num_search_results=num_search_results,
+            per_source_limit=per_source_limit,
+            num_retrieved_docs=num_retrieved_docs,
+            enable_search=enable_search,
+            enable_local_docs=enable_local_docs,
+            freshness=freshness,
+            date_restrict=date_restrict,
+            timing_recorder=timing_recorder,
+            domain=domain,
+            domain_result=domain_result,
+            enable_domain=enable_domain,
+        )
+        evidence_items: List[EvidenceItem] = retrieval["evidence_items"]
+        search_hits = evidence_items_to_search_hits(evidence_items)
+        retrieved_docs = evidence_items_to_documents(evidence_items)
+
         preliminary = {
             "query": query,
-            "search_hits": [asdict(hit) for hit in hits],
+            "search_hits": [asdict(hit) for hit in search_hits],
             "retrieved_docs": [asdict(doc) for doc in retrieved_docs],
-            "rerank": rerank_meta or None,
-            "search_query": effective_query,
+            "rerank": retrieval["rerank_meta"] or None,
+            "fusion": retrieval["fusion_meta"] or None,
+            "search_query": retrieval["effective_query"],
+            "evidence_items": [item.to_dict() for item in evidence_items],
+            "evidence_sources_active": retrieval["active_sources"],
+            "evidence_sources_used": retrieval["used_sources"],
         }
         yield json.dumps({"type": "preliminary", "data": preliminary})
         
         # Build prompt
-        search_context = self._format_search_hits(hits)
-        local_context = self._format_local_docs(retrieved_docs)
-        
+        formatted_context = self._format_evidence_context(evidence_items)
         prompt_parts = [f"Question: {query}\n\n"]
-        if search_context:
-            prompt_parts.append(f"Web Search Results:\n{search_context}\n\n")
-        if local_context:
-            prompt_parts.append(f"Local Documents:\n{local_context}\n\n")
+        if formatted_context["domain"]:
+            prompt_parts.append(f"Domain Evidence:\n{formatted_context['domain']}\n\n")
+        if formatted_context["web"]:
+            prompt_parts.append(f"Web Search Results:\n{formatted_context['web']}\n\n")
+        if formatted_context["local"]:
+            prompt_parts.append(f"Local Documents:\n{formatted_context['local']}\n\n")
         prompt_parts.append("Answer the question based on the above information.")
         
         messages = [
@@ -856,7 +1085,7 @@ class SearchRAGChain:
                 )
         
         # Yield references
-        reference_hits = hits if reference_limit is None else hits[:reference_limit]
+        reference_hits = search_hits if reference_limit is None else search_hits[:reference_limit]
         if reference_hits:
             ref_text = "\n\n**网络来源：**\n"
             for idx, hit in enumerate(reference_hits, 1):
@@ -872,6 +1101,13 @@ class SearchRAGChain:
                 source = doc.source or f"文档 {idx}"
                 ref_text += f"{idx}. {source}\n"
             yield json.dumps({"type": "local_references", "data": ref_text})
+
+        domain_items = [item for item in evidence_items if item.source_type == "domain"]
+        if domain_items:
+            ref_text = "\n\n**领域来源：**\n"
+            for idx, item in enumerate(domain_items, 1):
+                ref_text += f"{idx}. {item.title or 'Domain Evidence'} | {normalize_reference_label(item)}\n"
+            yield json.dumps({"type": "domain_references", "data": ref_text})
 
 
 # Factory functions for creating RAG chains

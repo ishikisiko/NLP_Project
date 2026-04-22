@@ -132,6 +132,11 @@ class ReactAgentOrchestrator:
                 "query": query,
                 "answer": output,
                 "search_hits": search_hits or list(fallback_context.get("search_hits") or []) if fallback_context else search_hits,
+                "evidence_items": list(fallback_context.get("evidence_items") or []) if fallback_context else [],
+                "evidence_sources_active": list(fallback_context.get("evidence_sources_active") or []) if fallback_context else [],
+                "evidence_sources_used": list(fallback_context.get("evidence_sources_used") or []) if fallback_context else [],
+                "evidence_source_types_active": list(fallback_context.get("evidence_source_types_active") or []) if fallback_context else [],
+                "evidence_source_types_used": list(fallback_context.get("evidence_source_types_used") or []) if fallback_context else [],
                 "llm_raw": None,
                 "llm_warning": None,
                 "llm_error": None,
@@ -152,6 +157,10 @@ class ReactAgentOrchestrator:
                 "max_iterations": self.max_iterations,
                 "final_executor": "react_fallback" if fallback_context else "react_agent",
                 "fallback_triggered": bool(fallback_context),
+                "evidence_sources_active": response.get("evidence_sources_active") or [],
+                "evidence_sources_used": response.get("evidence_sources_used") or [],
+                "evidence_source_types_active": response.get("evidence_source_types_active") or [],
+                "evidence_source_types_used": response.get("evidence_source_types_used") or [],
             }
             if fallback_context:
                 control["fallback_context"] = self._fallback_context_meta(fallback_context)
@@ -227,6 +236,10 @@ class ReactAgentOrchestrator:
         if evidence_summary:
             lines.extend(["", f"Available Evidence Summary:\n{evidence_summary}"])
 
+        evidence_source_types = fallback_context.get("evidence_source_types_used") or []
+        if evidence_source_types:
+            lines.extend(["", f"Available Evidence Source Types: {', '.join(map(str, evidence_source_types))}"])
+
         recovery_goal = str(fallback_context.get("recovery_goal") or "").strip()
         if recovery_goal:
             lines.extend(["", f"Recovery Goal:\n{recovery_goal}"])
@@ -240,6 +253,8 @@ class ReactAgentOrchestrator:
             "missing_constraints": list(fallback_context.get("missing_constraints") or []),
             "has_previous_answer": bool(fallback_context.get("previous_answer")),
             "has_evidence_summary": bool(fallback_context.get("evidence_summary")),
+            "evidence_source_types_active": list(fallback_context.get("evidence_source_types_active") or []),
+            "evidence_source_types_used": list(fallback_context.get("evidence_source_types_used") or []),
         }
 
     def _has_local_docs_tool(self) -> bool:

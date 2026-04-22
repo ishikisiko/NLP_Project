@@ -5,6 +5,7 @@ from dataclasses import dataclass
 from typing import Any, List, Optional, Union
 
 from langchain_core.documents import Document as LCDocument
+from utils.embedding_config import resolve_embedding_settings
 
 
 @dataclass
@@ -119,17 +120,45 @@ class LangChainVectorStore:
     def __init__(
         self,
         *,
-        model_name: str = "all-MiniLM-L6-v2",
+        model_name: Optional[str] = None,
         chunk_size: int = 1000,
         chunk_overlap: int = 200,
+        config: Optional[dict[str, Any]] = None,
     ) -> None:
-        self.model_name = model_name
+        settings = resolve_embedding_settings(config, model_name=model_name)
+        self.model_name = str(settings["model"])
+        self.embedding_provider = str(settings["provider"])
+        self.embedding_base_url = settings["base_url"]
         self.chunk_size = chunk_size
         self.chunk_overlap = chunk_overlap
-        from langchain_huggingface import HuggingFaceEmbeddings
         from langchain_text_splitters import RecursiveCharacterTextSplitter
 
-        self._embedder = HuggingFaceEmbeddings(model_name=model_name)
+        if self.embedding_provider == "openai_compatible":
+            if not settings["api_key"]:
+                raise ValueError(
+                    "Embedding provider 'openai_compatible' requires 'embeddings.api_key' "
+                    "in config.json or EMBEDDING_API_KEY / OPENAI_API_KEY in the environment."
+                )
+            from langchain_openai import OpenAIEmbeddings
+
+            self._embedder = OpenAIEmbeddings(
+                model=self.model_name,
+                base_url=settings["base_url"],
+                api_key=settings["api_key"],
+                timeout=settings["timeout"],
+                chunk_size=10,
+                tiktoken_enabled=False,
+                check_embedding_ctx_length=False,
+            )
+        elif self.embedding_provider == "huggingface":
+            from langchain_huggingface import HuggingFaceEmbeddings
+
+            self._embedder = HuggingFaceEmbeddings(model_name=self.model_name)
+        else:
+            raise ValueError(
+                f"Unsupported embedding provider '{self.embedding_provider}'. "
+                "Expected 'huggingface' or 'openai_compatible'."
+            )
         self._splitter = RecursiveCharacterTextSplitter(
             chunk_size=self.chunk_size,
             chunk_overlap=self.chunk_overlap,
@@ -210,11 +239,12 @@ class LangChainVectorStore:
         cls,
         folder_path: str,
         *,
-        model_name: str = "all-MiniLM-L6-v2",
+        model_name: Optional[str] = None,
+        config: Optional[dict[str, Any]] = None,
         allow_dangerous_deserialization: bool = True,
     ) -> "LangChainVectorStore":
         """Load a vector store from disk."""
-        instance = cls(model_name=model_name)
+        instance = cls(model_name=model_name, config=config)
         from langchain_community.vectorstores import FAISS
 
         instance._store = FAISS.load_local(

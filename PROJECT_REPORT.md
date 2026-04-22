@@ -63,7 +63,7 @@ NLP_Project/
 #### 2.2.1 前端模块 (frontend/)
 - 提供Web用户界面
 - 支持文件上传
-- 支持查询模式切换（搜索/本地/混合）
+- 支持联网搜索开关、搜索源选择和强制搜索
 - 配置参数调整
 
 #### 2.2.2 LangChain集成模块 (langchain/)
@@ -82,7 +82,7 @@ NLP_Project/
 - 工作流编排：协调各模块执行复杂任务
 
 #### 2.2.4 搜索模块 (search/)
-- **search.py**: 支持多种搜索API（SerpAPI、You.com、Google Custom Search）
+- **search.py**: 支持多种搜索API（Brave Search、Bright Data SERP、You.com、Google Custom Search）
 - **rerank.py**: 重排序实现（支持Qwen3重排序模型）
 - **source_selector.py**: 智能源选择器
 - **sports_api.py**: 体育数据API集成
@@ -127,7 +127,8 @@ NLP_Project/
 - **Sentence-Transformers**: 文档向量化
 
 ### 3.5 搜索与数据源
-- **SerpAPI**: Google搜索结果API
+- **Brave Search**: 默认优先使用的通用网页搜索提供商
+- **Bright Data SERP**: Google风格 SERP 的后备搜索提供商
 - **You.com**: 替代搜索引擎
 - **Google Custom Search JSON API**: 自定义搜索
 - **Yahoo Finance API (yfinance)**: 金融数据接口
@@ -241,14 +242,14 @@ NLP_Project/
 
 #### 5.1.1 命令行界面 (CLI)
 ```bash
-# 搜索模式（默认）
+# 默认统一主链路（开启联网搜索）
 python main.py "你的查询"
 
-# 本地RAG模式
-python main.py "你的查询" --mode local --data-path ./data
+# 仅使用本地文档
+python main.py "你的查询" --search off --data-path ./uploads
 
-# 混合模式
-python main.py "你的查询" --mode hybrid --data-path ./data
+# 联网搜索 + 本地文档
+python main.py "你的查询" --data-path ./uploads
 
 # 覆盖LLM提供商
 python main.py "你的查询" --provider openai
@@ -267,7 +268,7 @@ python main.py "你的查询" \
 # 启动Web服务器
 python server.py
 ```
-然后访问 `http://localhost:8000`。
+然后访问 `http://localhost:8000`，通过联网搜索开关、搜索源选择和文件上传控制运行方式。
 
 ### 5.2 测试方式
 

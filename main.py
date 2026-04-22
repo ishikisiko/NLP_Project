@@ -19,6 +19,7 @@ from search.search import (
 )
 from search.rerank import BaseReranker, Qwen3Reranker
 from orchestrators.smart_orchestrator import SmartSearchOrchestrator
+from utils.chunking import resolve_chunk_settings
 from utils.temperature_config import get_temperature_for_task
 
 # Import LangChain components for optional use
@@ -30,6 +31,13 @@ except ImportError:
     LANGCHAIN_AVAILABLE = False
 
 ZAI_ANTHROPIC_DEFAULT_BASE_URL = "https://open.bigmodel.cn/api/anthropic"
+
+
+def load_runtime_config(config_path: Optional[str] = None) -> Dict[str, Any]:
+    """Load runtime configuration from an explicit path, env override, or config.json."""
+    resolved_path = config_path or os.environ.get("NLP_CONFIG_PATH") or "config.json"
+    with open(resolved_path, "r", encoding="utf-8") as handle:
+        return json.load(handle)
 
 
 def _normalize_provider_base_url(provider: str, base_url: Optional[str]) -> Optional[str]:
@@ -345,6 +353,18 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="Use legacy SmartSearchOrchestrator instead of LangChain-based orchestrator.",
     )
+    parser.add_argument(
+        "--chunk-size",
+        type=int,
+        default=None,
+        help="Override the local RAG chunk size for this run.",
+    )
+    parser.add_argument(
+        "--chunk-overlap",
+        type=int,
+        default=None,
+        help="Override the local RAG chunk overlap for this run.",
+    )
     return parser.parse_args()
 
 
@@ -612,14 +632,29 @@ def build_reranker(config: dict) -> Tuple[Optional[BaseReranker], Dict[str, Any]
 def main() -> None:
     args = parse_args()
 
-    with open("config.json", "r") as f:
-        config = json.load(f)
+    try:
+        config = load_runtime_config()
+    except FileNotFoundError as exc:
+        missing_path = exc.filename or (os.environ.get("NLP_CONFIG_PATH") or "config.json")
+        raise SystemExit(
+            f"Configuration file '{missing_path}' not found. "
+            "Set NLP_CONFIG_PATH or create config.json."
+        ) from exc
 
     # Override provider or model if specified via command line
     if args.model:
         config["LLM_PROVIDER"] = args.model
     elif args.provider:
         config["LLM_PROVIDER"] = args.provider
+
+    try:
+        chunk_size, chunk_overlap = resolve_chunk_settings(
+            config,
+            chunk_size=args.chunk_size,
+            chunk_overlap=args.chunk_overlap,
+        )
+    except ValueError as exc:
+        raise SystemExit(str(exc)) from exc
 
     allow_search = args.search == "on"
 
@@ -691,6 +726,8 @@ def main() -> None:
             missing_search_sources=missing_sources,
             configured_search_sources=configured_sources,
             show_timings=show_timings,
+            chunk_size=chunk_size,
+            chunk_overlap=chunk_overlap,
             google_api_key=google_key_cli,
             sportsdb_api_key=sportsdb_key_cli,
             config=config,
@@ -722,6 +759,8 @@ def main() -> None:
                 missing_search_sources=missing_sources,
                 configured_search_sources=configured_sources,
                 show_timings=show_timings,
+                chunk_size=chunk_size,
+                chunk_overlap=chunk_overlap,
                 google_api_key=google_key_cli,
                 sportsdb_api_key=sportsdb_key_cli,
                 config=config,
@@ -754,6 +793,8 @@ def main() -> None:
                 llm=llm,
                 search_client=search_client,
                 data_path=args.data_path,
+                chunk_size=chunk_size,
+                chunk_overlap=chunk_overlap,
                 reranker=langchain_reranker,
                 min_rerank_score=min_rerank_score,
                 max_per_domain=max_per_domain,

@@ -3,7 +3,9 @@ from __future__ import annotations
 from typing import Any
 
 import server
+from evidence import EvidenceItem
 from langchain.langchain_orchestrator import LangChainOrchestrator
+from langchain.langchain_rag import SearchRAGChain
 from langchain.langchain_react_tools import (
     ReActDomainTool,
     ReActLocalDocTool,
@@ -62,20 +64,32 @@ def test_react_tools_wrap_search_domain_and_local_docs(monkeypatch, tmp_path):
     assert "https://openai.com/" in search_tool._run("openai")
 
     domain_tool = ReActDomainTool(source_selector=StubSourceSelector(), llm=None)
-    assert domain_tool._run("weather in sf") == "Weather is sunny."
+    domain_result = domain_tool._run("weather in sf")
+    assert "Weather is sunny." in domain_result
+    assert "Evidence Source: domain:weather" in domain_result
 
     local_tool = ReActLocalDocTool(data_path=str(tmp_path), llm=None)
 
-    class StubLocalRAG:
-        def answer(self, query: str, num_retrieved_docs: int = 3):
-            return {
-                "answer": "Local answer",
-                "retrieved_docs": [{"source": "notes.md"}],
-            }
+    class StubLocalSource:
+        def retrieve(self, query: str, options: Any):
+            return [
+                type(
+                    "Item",
+                    (),
+                    {
+                        "title": "notes.md",
+                        "snippet": "Local answer",
+                        "content": "Local answer",
+                        "source_type": "local",
+                        "source_id": str(tmp_path),
+                        "reference": "notes.md",
+                    },
+                )()
+            ]
 
-    monkeypatch.setattr(local_tool, "_get_rag", lambda: StubLocalRAG())
+    monkeypatch.setattr(local_tool, "_get_source", lambda: StubLocalSource())
     result = local_tool._run("local question")
-    assert "Local answer" in result
+    assert "Relevant Local Evidence" in result
     assert "notes.md" in result
 
 
@@ -90,6 +104,8 @@ def test_react_search_recovery_tool_formats_high_level_payload(monkeypatch):
                     {"title": "OpenAI", "url": "https://openai.com/", "snippet": "AI research and products."}
                 ],
                 "retrieved_docs": [{"source": "notes.md", "content": "Doc summary"}],
+                "evidence_sources_used": [{"source_type": "web", "source_id": "combined"}],
+                "evidence_summary": "1. [web:combined] OpenAI | https://openai.com/ | AI research and products.",
             }
 
     monkeypatch.setattr(tool, "_get_chain", lambda: StubSearchRAGChain())
@@ -97,6 +113,7 @@ def test_react_search_recovery_tool_formats_high_level_payload(monkeypatch):
     assert "Recovered answer" in result
     assert "https://openai.com/" in result
     assert "notes.md" in result
+    assert "web:combined" in result
 
 
 def test_react_agent_orchestrator_answer_returns_compatible_payload(monkeypatch):
@@ -124,6 +141,7 @@ def test_react_agent_orchestrator_answer_returns_compatible_payload(monkeypatch)
     assert result["control"]["search_mode"] == "react_agent"
     assert result["control"]["max_iterations"] == 3
     assert result["control"]["local_docs_present"] is True
+    assert result["control"]["evidence_sources_active"] == []
 
 
 def test_react_agent_orchestrator_accepts_fallback_context(monkeypatch):
@@ -148,6 +166,11 @@ def test_react_agent_orchestrator_accepts_fallback_context(monkeypatch):
             "evidence_summary": "Existing search hit",
             "recovery_goal": "Cover the missing time constraint.",
             "search_hits": [{"title": "existing", "url": "https://example.com", "snippet": "snippet"}],
+            "evidence_items": [{"source_type": "web", "source_id": "combined"}],
+            "evidence_sources_active": [{"source_type": "web", "source_id": "combined"}],
+            "evidence_sources_used": [{"source_type": "web", "source_id": "combined"}],
+            "evidence_source_types_active": ["web"],
+            "evidence_source_types_used": ["web"],
         },
     )
 
@@ -156,6 +179,7 @@ def test_react_agent_orchestrator_accepts_fallback_context(monkeypatch):
     assert result["control"]["fallback_triggered"] is True
     assert result["control"]["final_executor"] == "react_fallback"
     assert result["search_hits"][0]["title"] == "existing"
+    assert result["control"]["evidence_source_types_used"] == ["web"]
 
 
 def test_postcheck_rules_detect_missing_time_and_unsupported_numbers():
@@ -198,6 +222,72 @@ def test_merge_judge_verdict_disables_fallback_for_nonrecoverable_failures():
     assert merged.recoverable is False
 
 
+def test_search_rag_chain_projects_compatibility_fields_from_evidence_items(monkeypatch):
+    chain = SearchRAGChain(
+        llm=StubLLM("Unified answer"),
+        search_client=StubSearchClient([]),
+        data_path=None,
+    )
+
+    monkeypatch.setattr(
+        chain,
+        "_retrieve_evidence",
+        lambda *args, **kwargs: {
+            "effective_query": "unified query",
+            "evidence_items": [
+                EvidenceItem(
+                    source_type="domain",
+                    source_id="domain:weather",
+                    title="weather evidence",
+                    content="Weather is sunny.",
+                    reference="google-weather",
+                    snippet="Weather is sunny.",
+                ),
+                EvidenceItem(
+                    source_type="web",
+                    source_id="combined",
+                    title="OpenAI",
+                    content="AI research and products.",
+                    reference="https://openai.com/",
+                    snippet="AI research and products.",
+                ),
+                EvidenceItem(
+                    source_type="local",
+                    source_id="/tmp/docs",
+                    title="notes.md",
+                    content="Local document snippet",
+                    reference="notes.md",
+                    snippet="Local document snippet",
+                    metadata={"source": "notes.md"},
+                ),
+            ],
+            "active_sources": [
+                {"source_type": "domain", "source_id": "domain:weather"},
+                {"source_type": "web", "source_id": "combined"},
+                {"source_type": "local", "source_id": "/tmp/docs"},
+            ],
+            "used_sources": [
+                {"source_type": "domain", "source_id": "domain:weather"},
+                {"source_type": "web", "source_id": "combined"},
+                {"source_type": "local", "source_id": "/tmp/docs"},
+            ],
+            "search_error": None,
+            "search_warnings": [],
+            "rerank_meta": [],
+            "fusion_meta": [],
+            "domain_result": {"answer": "Weather is sunny."},
+        },
+    )
+
+    result = chain.answer("Need unified evidence")
+
+    assert result["answer"].startswith("Unified answer")
+    assert result["search_hits"][0]["title"] == "OpenAI"
+    assert result["retrieved_docs"][0]["source"] == "notes.md"
+    assert result["evidence_source_types_used"] == ["domain", "local", "web"]
+    assert "领域来源" in result["answer"]
+
+
 class StubLLM:
     provider = "stub"
     model_name = "stub-model"
@@ -228,6 +318,12 @@ class StubPipeline:
             ],
             "retrieved_docs": [],
             "llm_raw": None,
+            "evidence_items": [{"source_type": "web", "source_id": "combined", "title": "Revenue", "reference": "https://example.com", "snippet": "Revenue was 609亿美元 in 2024."}],
+            "evidence_summary": "1. [web:combined] Revenue | https://example.com | Revenue was 609亿美元 in 2024.",
+            "evidence_sources_active": [{"source_type": "web", "source_id": "combined"}],
+            "evidence_sources_used": [{"source_type": "web", "source_id": "combined"}],
+            "evidence_source_types_active": ["web"],
+            "evidence_source_types_used": ["web"],
         }
 
 
@@ -238,6 +334,11 @@ class StubFallbackOrchestrator:
             "query": query,
             "answer": "Recovered answer",
             "search_hits": list(fallback_context.get("search_hits") or []),
+            "evidence_items": list(fallback_context.get("evidence_items") or []),
+            "evidence_sources_active": list(fallback_context.get("evidence_sources_active") or []),
+            "evidence_sources_used": list(fallback_context.get("evidence_sources_used") or []),
+            "evidence_source_types_active": list(fallback_context.get("evidence_source_types_active") or []),
+            "evidence_source_types_used": list(fallback_context.get("evidence_source_types_used") or []),
             "control": {
                 "search_mode": "react_fallback",
             },
@@ -293,6 +394,7 @@ def test_langchain_orchestrator_triggers_react_fallback(monkeypatch):
     assert result["control"]["fallback_triggered"] is True
     assert result["control"]["final_executor"] == "react_fallback"
     assert result["control"]["postcheck"]["should_fallback_to_react"] is True
+    assert result["control"]["evidence_source_types_used"] == ["web"]
 
 
 def test_langchain_orchestrator_local_only_uses_primary_pipeline(monkeypatch):
@@ -315,6 +417,12 @@ def test_langchain_orchestrator_local_only_uses_primary_pipeline(monkeypatch):
             "answer": "local answer",
             "search_hits": [],
             "retrieved_docs": [],
+            "evidence_items": [],
+            "evidence_summary": "",
+            "evidence_sources_active": [{"source_type": "local", "source_id": "/tmp"}],
+            "evidence_sources_used": [],
+            "evidence_source_types_active": ["local"],
+            "evidence_source_types_used": [],
         },
     )
 
@@ -323,6 +431,7 @@ def test_langchain_orchestrator_local_only_uses_primary_pipeline(monkeypatch):
     assert result["answer"] == "local answer"
     assert result["control"]["search_mode"] == "local_rag"
     assert result["control"]["final_executor"] == "default_pipeline"
+    assert result["control"]["evidence_source_types_active"] == ["local"]
 
 
 def test_langchain_orchestrator_search_unavailable_uses_default_pipeline_metadata(monkeypatch):
@@ -351,6 +460,12 @@ def test_langchain_orchestrator_search_unavailable_uses_default_pipeline_metadat
             "answer": "fallback answer",
             "search_hits": [],
             "retrieved_docs": [],
+            "evidence_items": [],
+            "evidence_summary": "",
+            "evidence_sources_active": [],
+            "evidence_sources_used": [],
+            "evidence_source_types_active": [],
+            "evidence_source_types_used": [],
         },
     )
 
@@ -360,6 +475,7 @@ def test_langchain_orchestrator_search_unavailable_uses_default_pipeline_metadat
     assert result["control"]["search_mode"] == "search_unavailable"
     assert result["control"]["search_allowed"] is True
     assert result["control"]["final_executor"] == "default_pipeline"
+    assert result["control"]["evidence_sources_active"] == []
 
 
 def test_server_build_pipeline_uses_langchain_even_when_react_mode_requested(monkeypatch):
@@ -397,3 +513,40 @@ def test_server_build_pipeline_uses_langchain_even_when_react_mode_requested(mon
     monkeypatch.setattr(server, "load_base_config", lambda: {**base_config, "orchestrator_mode": "langchain"})
     assert server.build_pipeline() == "default-orchestrator"
     assert len(default_calls) == 2
+
+
+def test_server_build_pipeline_passes_resolved_chunk_settings(monkeypatch):
+    base_config = {
+        "providers": {
+            "minimax": {
+                "api_key": "valid-key",
+                "model": "MiniMax-M2.7-highspeed",
+            }
+        },
+        "localRag": {
+            "chunk_size": 777,
+            "chunk_overlap": 111,
+        },
+        "braveSearch": {},
+        "brightDataSearch": {},
+        "youSearch": {},
+        "googleSearch": {},
+        "rerank": {},
+        "displayResponseTimes": False,
+    }
+
+    monkeypatch.setattr(server, "create_chat_model", lambda config=None: object())
+    monkeypatch.setattr(server, "build_search_client", lambda config, sources=None: None)
+    monkeypatch.setattr(server, "build_reranker", lambda config: (None, config.get("rerank", {})))
+
+    captured: list[dict[str, Any]] = []
+    monkeypatch.setattr(
+        server,
+        "create_langchain_orchestrator",
+        lambda **kwargs: captured.append(kwargs) or "default-orchestrator",
+    )
+    monkeypatch.setattr(server, "load_base_config", lambda: base_config)
+
+    assert server.build_pipeline() == "default-orchestrator"
+    assert captured[-1]["chunk_size"] == 777
+    assert captured[-1]["chunk_overlap"] == 111
